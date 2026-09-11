@@ -1,0 +1,10 @@
+[annotations]
+paths = ["~/.local/share/wtf/annotations"]
+
+[topics]
+dirs = ["~/.local/share/wtf/topics"]
+write_dir = "~/.local/share/wtf/topics"
+post_write = []
+
+[providers.cheat]
+enabled = true

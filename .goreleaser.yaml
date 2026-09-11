@@ -1,0 +1,36 @@
+version: 2
+project_name: wtf
+before:
+  hooks:
+    - go test ./...
+builds:
+  - id: wtf
+    main: .
+    binary: wtf
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: -s -w -X main.version={{.Version}}
+archives:
+  - ids: [wtf]
+    formats: [tar.gz]
+    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files: [LICENSE, README.md, docs/*]
+nfpms:
+  - ids: [wtf]
+    package_name: wtf
+    vendor: wawrzdev
+    homepage: https://github.com/wawrzdev/wtf
+    maintainer: wawrzdev
+    description: Local-first command discovery and composed documentation
+    license: MIT
+    formats: [deb, archlinux]
+    bindir: /usr/bin
+checksum:
+  name_template: checksums.txt
+changelog:
+  use: git
+release:
+  github:
+    owner: wawrzdev
+    name: wtf

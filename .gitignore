@@ -1,0 +1,4 @@
+/wtf
+/dist/
+*.test
+coverage.out
