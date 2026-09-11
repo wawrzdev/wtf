@@ -29,10 +29,12 @@ nfpms:
     package_name: wtf
     vendor: wawrzdev
     homepage: https://github.com/wawrzdev/wtf
-    maintainer: wawrzdev
+    maintainer: Kris Wawrzyniak <wawrz.dev@gmail.com>
     description: Local-first command discovery and composed documentation
     license: MIT
     formats: [deb, archlinux]
+    archlinux:
+      packager: Kris Wawrzyniak <wawrz.dev@gmail.com>
     bindir: /usr/bin
     dependencies:
       - fzf
