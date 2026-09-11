@@ -1,6 +1,7 @@
 # Configuration
 
-The base file is `$XDG_CONFIG_HOME/wtf/config.toml`. Files matching `conf.d/*.toml` are optional;
+The base file is `$XDG_CONFIG_HOME/wtf/config.toml`; when `XDG_CONFIG_HOME` is unset, it resolves to
+`~/.config/wtf/config.toml`. Files matching `conf.d/*.toml` are optional;
 each fragment must contain a unique integer `priority`. Fragments apply from lowest to highest
 priority. Array and scalar fields replace the preceding value. Invalid and unknown values identify
 their source file.
@@ -19,6 +20,9 @@ enabled = true
 ```
 
 `~`, `$HOME`, `$XDG_CONFIG_HOME`, `$XDG_DATA_HOME`, and `$XDG_CACHE_HOME` expand in paths. The
+fallbacks are `~/.config`, `~/.local/share`, and `~/.cache`, respectively. Default annotations and
+topics therefore live below `~/.local/share/wtf`, while package and cheat caches live below
+`~/.cache/wtf`. The
 optional `pager` root key configures the plain renderer's pager. `mdcat`, when available, owns
 pagination and follows its normal `MDCAT_PAGER`/`PAGER` behavior.
 

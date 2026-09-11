@@ -1,6 +1,8 @@
 # Providers and cache
 
-`wtf` caches package-to-command mappings in `$XDG_CACHE_HOME/wtf/packages-v1.json`. Each provider
+`wtf` caches package-to-command mappings in `$XDG_CACHE_HOME/wtf/packages-v1.json`; when
+`XDG_CACHE_HOME` is unset, the path is `~/.cache/wtf/packages-v1.json`. Authored annotations and
+topics use `$XDG_DATA_HOME/wtf` with a `~/.local/share/wtf` fallback. Each provider
 uses local installation metadata as a cheap fingerprint and refreshes on a fingerprint change or
 after 24 hours. Writes use a same-directory temporary file plus atomic rename. A failed refresh
 retains older records and marks them stale; a corrupt cache is discarded.

@@ -8,16 +8,24 @@ builds:
     main: .
     binary: wtf
     env: [CGO_ENABLED=0]
+    flags:
+      - -trimpath
     goos: [darwin, linux]
     goarch: [amd64, arm64]
     ldflags: -s -w -X main.version={{.Version}}
 archives:
-  - ids: [wtf]
+  - id: archives
+    ids: [wtf]
     formats: [tar.gz]
     name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
-    files: [LICENSE, README.md, docs/*]
+    files:
+      - LICENSE
+      - README.md
+      - docs/*
+      - completions/*
 nfpms:
-  - ids: [wtf]
+  - id: native-packages
+    ids: [wtf]
     package_name: wtf
     vendor: wawrzdev
     homepage: https://github.com/wawrzdev/wtf
@@ -28,10 +36,21 @@ nfpms:
     bindir: /usr/bin
     dependencies:
       - fzf
+    contents:
+      - src: completions/wtf.bash
+        dst: /usr/share/bash-completion/completions/wtf
+      - src: completions/wtf.zsh
+        dst: /usr/share/zsh/site-functions/_wtf
+      - src: completions/wtf.fish
+        dst: /usr/share/fish/vendor_completions.d/wtf.fish
 checksum:
   name_template: checksums.txt
 changelog:
-  use: git
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
 release:
   github:
     owner: wawrzdev

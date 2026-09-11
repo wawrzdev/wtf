@@ -6,12 +6,32 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version: '1.24.x'
+          go-version-file: go.mod
+      - run: test -z "$(gofmt -l .)"
+      - run: go test ./...
+      - run: go vet ./...
+      - run: go test -race ./...
+      - if: runner.os == 'Linux'
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: check
+
+  archlinux:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - run: pacman -Syu --noconfirm git go
+      - uses: actions/checkout@v7
       - run: test -z "$(gofmt -l .)"
       - run: go test ./...
       - run: go vet ./...

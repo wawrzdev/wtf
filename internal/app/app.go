@@ -651,17 +651,26 @@ func completion(args []string, w io.Writer) error {
 	if len(args) != 1 {
 		return errors.New("usage: wtf completion <zsh|bash|fish>")
 	}
-	switch args[0] {
-	case "zsh":
-		fmt.Fprint(w, zshCompletion)
-	case "bash":
-		fmt.Fprint(w, bashCompletion)
-	case "fish":
-		fmt.Fprint(w, fishCompletion)
-	default:
-		return fmt.Errorf("unsupported shell %q", args[0])
+	script, err := CompletionScript(args[0])
+	if err != nil {
+		return err
 	}
+	fmt.Fprint(w, script)
 	return nil
+}
+
+// CompletionScript returns the same completion source emitted by `wtf completion`.
+func CompletionScript(shell string) (string, error) {
+	switch shell {
+	case "zsh":
+		return zshCompletion, nil
+	case "bash":
+		return bashCompletion, nil
+	case "fish":
+		return fishCompletion, nil
+	default:
+		return "", fmt.Errorf("unsupported shell %q", shell)
+	}
 }
 
 const usage = `wtf — discover installed commands and read composed documentation
