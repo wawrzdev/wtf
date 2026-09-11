@@ -107,12 +107,13 @@ func safeCommandID(id string) bool {
 	return true
 }
 
-func mergeTLDR(records []Record) []Record {
+func mergeTLDR(records []Record) ([]Record, error) {
 	seen := map[string]int{}
 	for i := range records {
 		seen[records[i].ID] = i
 	}
-	for _, id := range localTLDRIDs() {
+	ids, err := localTLDRIDs()
+	for _, id := range ids {
 		if i, ok := seen[id]; ok {
 			records[i].HasTLDR = true
 			continue
@@ -121,7 +122,7 @@ func mergeTLDR(records []Record) []Record {
 		records = append(records, Record{ID: id, Kind: "command", HasTLDR: true})
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].ID < records[j].ID })
-	return records
+	return records, err
 }
 
 func enrichAnnotatedSystemPackages(ctx context.Context, records []Record) []Record {

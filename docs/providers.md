@@ -10,7 +10,7 @@ retains older records and marks them stale; a corrupt cache is discarded.
 | Homebrew | `brew leaves`, formula prefixes and their `bin` entries; Cellar directory metadata |
 | mise | installed listing; mise installs directory metadata |
 | uv | tool listing and entry points; uv tools directory metadata |
-| Cargo | `.crates.toml` packages/binaries; manifest and bin directory metadata |
+| Cargo | `$CARGO_HOME` or `~/.cargo` `.crates.toml` packages/binaries; manifest and bin directory metadata |
 | Go | executable embedded module build info; Go bin directory metadata |
 | APT/dpkg | exact command ownership only; dpkg status and APT extended-state metadata |
 | Pacman | exact command ownership only; pacman local database metadata |
@@ -25,6 +25,7 @@ packages; exact Pacman ownership is reported without treating the system package
 seed.
 
 Successful cheat.sh pages are cached for seven days. Requests happen only after selection and only
-for commands backed by a known package or local tldr page. Topics, aliases, functions, and
+for commands backed by a local tldr page or provider metadata that proves a public registry source
+(currently Homebrew core and crates.io). Merely having an installed package is insufficient. Topics, aliases, functions, and
 annotation-only names are never sent. Offline failures preserve local output and use labeled stale
 cache content when available.

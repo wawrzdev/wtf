@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/wawrzdev/wtf/internal/config"
 	"github.com/wawrzdev/wtf/internal/content"
@@ -66,7 +67,13 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if e != nil {
 		fmt.Fprintf(stderr, "wtf: warning: package cache: %v\n", e)
 	}
-	rt.records = enrichAnnotatedSystemPackages(ctx, mergeTLDR(buildRecords(anns, topics, inventory.AllPackages(rt.cache), true)))
+	rt.records = buildRecords(anns, topics, inventory.AllPackages(rt.cache), true)
+	if merged, walkErr := mergeTLDR(rt.records); walkErr != nil {
+		fmt.Fprintf(stderr, "wtf: warning: local tldr discovery: %v\n", walkErr)
+	} else {
+		rt.records = merged
+	}
+	rt.records = enrichAnnotatedSystemPackages(ctx, rt.records)
 	if len(args) > 0 && args[0] == "list" {
 		return rt.list(args[1:])
 	}
@@ -101,15 +108,18 @@ func (r *runtime) cacheCommand(ctx context.Context, args []string) error {
 		fmt.Fprintln(r.stdout, string(b))
 		return nil
 	}
-	fmt.Fprintln(r.stdout, "PROVIDER\tAGE_SECONDS\tFINGERPRINT_STATE\tSTALE")
+	writeCacheStatus(r.stdout, statuses)
+	return nil
+}
+func writeCacheStatus(w io.Writer, statuses []inventory.Status) {
+	fmt.Fprintln(w, "PROVIDER\tAGE_SECONDS\tFINGERPRINT_STATE\tSTALE\tERROR")
 	for _, s := range statuses {
 		state := "current"
 		if s.Changed {
 			state = "changed"
 		}
-		fmt.Fprintf(r.stdout, "%s\t%d\t%s\t%t\n", s.Provider, s.AgeSeconds, state, s.Stale)
+		fmt.Fprintf(w, "%s\t%d\t%s\t%t\t%s\n", s.Provider, s.AgeSeconds, state, s.Stale, sanitizeTSV(s.Error))
 	}
-	return nil
 }
 
 func (r *runtime) list(args []string) error {
@@ -158,6 +168,9 @@ func (r *runtime) lookup(ctx context.Context, args []string) error {
 	var queryParts []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--":
+			queryParts = append(queryParts, args[i+1:]...)
+			i = len(args)
 		case "--local-only":
 			localOnly = true
 		case "--shell-kind":
@@ -228,6 +241,9 @@ func (r *runtime) lookup(ctx context.Context, args []string) error {
 	if shell != nil {
 		parseShell(shell)
 		x.Shell = shell
+		if shell.Name == x.ID && (shell.Kind == "alias" || shell.Kind == "function") {
+			x.Available = true
+		}
 		if shell.Target != "" && !shell.Complex && !shell.Cycle {
 			if p, e := exec.LookPath(shell.Target); e == nil {
 				x.Path = p
@@ -244,25 +260,51 @@ func (r *runtime) lookup(ctx context.Context, args []string) error {
 }
 
 func parseShell(s *ShellResolution) {
-	if s.Kind == "function" || s.Target != "" || s.Cycle || s.Complex {
-		return
-	}
-	f := strings.Fields(s.Expansion)
-	if len(f) == 0 {
+	suppliedTarget := s.Target
+	s.Target = ""
+	if s.Kind != "alias" && s.Kind != "function" {
 		s.Complex = true
 		return
 	}
-	for _, x := range f {
-		if strings.ContainsAny(x, "|;&()<>`$\n") {
-			s.Complex = true
-			return
-		}
+	if s.Cycle {
+		return
 	}
-	s.Target = f[0]
+	target, ok := simpleShellTarget(s.Expansion)
+	if s.Kind == "function" {
+		if !ok {
+			s.Complex = true
+		}
+		return
+	}
+	if !ok || s.Complex || (suppliedTarget != "" && suppliedTarget != target) {
+		s.Complex = true
+		return
+	}
+	s.Target = target
 	if s.Target == s.Name {
 		s.Cycle = true
 		s.Target = ""
 	}
+}
+func simpleShellTarget(expansion string) (string, bool) {
+	if strings.TrimSpace(expansion) == "" || strings.ContainsAny(expansion, "|;&()<>`$\n\r\\\"'") {
+		return "", false
+	}
+	fields := strings.Fields(expansion)
+	if len(fields) == 0 || !safeCommandID(fields[0]) {
+		return "", false
+	}
+	for _, field := range fields {
+		for _, r := range field {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("._+-/:,=@%", r)) {
+				return "", false
+			}
+		}
+	}
+	if strings.Contains(fields[0], "=") {
+		return "", false
+	}
+	return fields[0], true
 }
 func packagesFor(c inventory.Cache, cmd string) []inventory.Package {
 	var r []inventory.Package
@@ -308,15 +350,18 @@ func (r *runtime) picker(ctx context.Context, records []Record, query string) er
 	if e != nil {
 		return e
 	}
-	preview := shellQuote(exe) + " --local-only {}"
-	args := []string{"--delimiter=\t", "--with-nth=1", "--layout=reverse", "--wrap", "--prompt=wtf ▸ ", "--header=enter: docs   ·   esc: quit", "--preview", preview, "--preview-window=right,55%,wrap,border-left"}
+	preview := shellQuote(exe) + " --local-only -- {1}"
+	args := []string{"--delimiter=\t", "--with-nth=2", "--layout=reverse", "--wrap", "--prompt=wtf ▸ ", "--header=enter: docs   ·   esc: quit", "--preview", preview, "--preview-window=right,55%,wrap,border-left"}
 	if query != "" {
 		args = append(args, "--query", query)
 	}
 	cmd := exec.CommandContext(ctx, fzf, args...)
 	var in strings.Builder
 	for _, x := range records {
-		fmt.Fprintf(&in, "%-10s %-20s %s\t%s\n", x.Kind, x.ID, x.Summary, x.ID)
+		if !safeCommandID(x.ID) {
+			continue
+		}
+		fmt.Fprintf(&in, "%s\t%-10s %-20s %s\n", x.ID, sanitizeDisplay(x.Kind), sanitizeDisplay(x.ID), sanitizeDisplay(x.Summary))
 	}
 	cmd.Stdin = strings.NewReader(in.String())
 	cmd.Stderr = r.stderr
@@ -330,13 +375,12 @@ func (r *runtime) picker(ctx context.Context, records []Record, query string) er
 		return fmt.Errorf("fzf: %w", e)
 	}
 	line := strings.TrimSpace(out.String())
-	_, id, _ := strings.Cut(line, "\t")
+	id, _, _ := strings.Cut(line, "\t")
 	if id == "" {
 		return nil
 	}
-	m := matchRecords(records, id)
-	if len(m) == 1 {
-		return r.display(ctx, m[0], false)
+	if selected, ok := recordByID(records, id); ok {
+		return r.display(ctx, selected, false)
 	}
 	return nil
 }
@@ -356,6 +400,41 @@ func contains(a []string, x string) bool {
 }
 func sanitizeTSV(s string) string {
 	return strings.NewReplacer("\t", " ", "\n", " ", "\r", " ").Replace(s)
+}
+func sanitizeDisplay(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b {
+			i++
+			if i < len(s) && s[i] == '[' {
+				i++
+				for i < len(s) {
+					c := s[i]
+					i++
+					if c >= '@' && c <= '~' {
+						break
+					}
+				}
+			}
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		if r < ' ' || r == 0x7f {
+			b.WriteByte(' ')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+func recordByID(records []Record, id string) (Record, bool) {
+	for _, r := range records {
+		if r.ID == id {
+			return r, true
+		}
+	}
+	return Record{}, false
 }
 func isTerminalWriter(w io.Writer) bool {
 	f, ok := w.(*os.File)
@@ -405,7 +484,7 @@ func (r *runtime) newTopic(ctx context.Context, title string) error {
 	if e := os.WriteFile(path, []byte(template), 0600); e != nil {
 		return e
 	}
-	return r.editFile(ctx, path, true)
+	return r.editFile(ctx, path, id)
 }
 func (r *runtime) editTopic(ctx context.Context, q string) error {
 	var topics []Record
@@ -415,42 +494,51 @@ func (r *runtime) editTopic(ctx context.Context, q string) error {
 		}
 	}
 	if q == "" {
-		return r.topicPicker(ctx, topics)
+		return r.topicPicker(ctx, topics, "")
 	}
 	m := matchRecords(topics, q)
 	if len(m) == 0 {
 		return fmt.Errorf("no authored topic matches %q", q)
 	}
 	if len(m) > 1 {
-		return r.topicPicker(ctx, m)
+		return r.topicPicker(ctx, m, q)
 	}
-	return r.editFile(ctx, m[0].Topic.Sources[len(m[0].Topic.Sources)-1].Path, false)
+	return r.editFile(ctx, m[0].Topic.Sources[len(m[0].Topic.Sources)-1].Path, m[0].ID)
 }
-func (r *runtime) topicPicker(ctx context.Context, topics []Record) error {
+func (r *runtime) topicPicker(ctx context.Context, topics []Record, query string) error {
 	fzf, e := exec.LookPath("fzf")
 	if e != nil {
 		return errors.New("fzf is required for topic selection; pass an exact topic id or install fzf")
 	}
-	cmd := exec.CommandContext(ctx, fzf, "--delimiter=\t", "--with-nth=1", "--layout=reverse", "--prompt=wtf topic ▸ ")
+	args := []string{"--delimiter=\t", "--with-nth=2", "--layout=reverse", "--prompt=wtf topic ▸ "}
+	if query != "" {
+		args = append(args, "--query", query)
+	}
+	cmd := exec.CommandContext(ctx, fzf, args...)
 	var in strings.Builder
 	for _, x := range topics {
-		fmt.Fprintf(&in, "%-20s %s\t%s\n", x.ID, x.Title, x.ID)
+		if !safeCommandID(x.ID) {
+			continue
+		}
+		fmt.Fprintf(&in, "%s\t%-20s %s\n", x.ID, sanitizeDisplay(x.ID), sanitizeDisplay(x.Title))
 	}
 	cmd.Stdin = strings.NewReader(in.String())
 	var out bytesBuffer
 	cmd.Stdout = &out
 	cmd.Stderr = r.stderr
 	if e := cmd.Run(); e != nil {
-		return nil
+		if ee := new(exec.ExitError); errors.As(e, &ee) && (ee.ExitCode() == 1 || ee.ExitCode() == 130) {
+			return nil
+		}
+		return fmt.Errorf("fzf: %w", e)
 	}
-	_, id, _ := strings.Cut(strings.TrimSpace(out.String()), "\t")
-	m := matchRecords(topics, id)
-	if len(m) == 1 {
-		return r.editFile(ctx, m[0].Topic.Sources[len(m[0].Topic.Sources)-1].Path, false)
+	id, _, _ := strings.Cut(strings.TrimSpace(out.String()), "\t")
+	if selected, ok := recordByID(topics, id); ok {
+		return r.editFile(ctx, selected.Topic.Sources[len(selected.Topic.Sources)-1].Path, selected.ID)
 	}
 	return nil
 }
-func (r *runtime) editFile(ctx context.Context, path string, isNew bool) error {
+func (r *runtime) editFile(ctx context.Context, path, expectedID string) error {
 	before, e := os.ReadFile(path)
 	if e != nil {
 		return e
@@ -488,6 +576,18 @@ func (r *runtime) editFile(ctx context.Context, path string, isNew bool) error {
 	if len(entries) != 1 {
 		return errors.New("saved topic did not contain one topic")
 	}
+	if e := content.Validate(entries[0]); e != nil || entries[0].Kind != "topic" {
+		if e == nil {
+			e = errors.New("kind must be topic")
+		}
+		return fmt.Errorf("saved topic is invalid (file preserved): %w", e)
+	}
+	if entries[0].ID != expectedID {
+		return fmt.Errorf("saved topic id changed from %q to %q (file preserved; hook not run)", expectedID, entries[0].ID)
+	}
+	if filepath.Clean(path) != path || filepath.Base(path) != expectedID+".md" {
+		return fmt.Errorf("topic path no longer matches id %q (file preserved; hook not run)", expectedID)
+	}
 	if len(r.cfg.Topics.PostWrite) > 0 {
 		argv := make([]string, len(r.cfg.Topics.PostWrite))
 		for i, a := range r.cfg.Topics.PostWrite {
@@ -505,7 +605,6 @@ func (r *runtime) editFile(ctx context.Context, path string, isNew bool) error {
 			return fmt.Errorf("post_write command failed (file preserved): %s: %w", strings.Join(argv, " "), e)
 		}
 	}
-	_ = isNew
 	return nil
 }
 
@@ -542,7 +641,7 @@ Usage:
   wtf topic new <title>
   wtf topic edit [query]
   wtf cache status [--json]
-	wtf cache refresh
+  wtf cache refresh
   wtf init zsh
   wtf completion <zsh|bash|fish>
   wtf version
@@ -575,7 +674,7 @@ function wtf() {
         fi
         local _wtf_word
         for _wtf_word in "${_wtf_words[@]}"; do
-          if [[ "$_wtf_word" == '|' || "$_wtf_word" == '||' || "$_wtf_word" == '&' || "$_wtf_word" == '&&' || "$_wtf_word" == ';' || "$_wtf_word" == *'>'* || "$_wtf_word" == *'<'* ]]; then
+          if [[ "$_wtf_word" == '|' || "$_wtf_word" == '||' || "$_wtf_word" == '&' || "$_wtf_word" == '&&' || "$_wtf_word" == ';' || "$_wtf_word" == *'>'* || "$_wtf_word" == *'<'* || "$_wtf_word" == *'$'* || "$_wtf_word" == *$'\x60'* || "$_wtf_word" == *'('* || "$_wtf_word" == *')'* ]]; then
             _wtf_meta+=(--shell-complex)
             break 2
           fi
@@ -596,9 +695,78 @@ function wtf() {
 }
 `
 const zshCompletion = `#compdef wtf
-_arguments '1:command:(list topic cache init completion version)' '*:query: '
+_wtf() {
+  local context state line
+  typeset -A opt_args
+  _arguments -C \
+    '1:command:->command' \
+    '*::argument:->arguments'
+  case $state in
+    command)
+      _values 'command' \
+        'list[list commands]' 'topic[author topics]' 'cache[inspect package cache]' \
+        'init[emit shell integration]' 'completion[emit completions]' 'version[print version]' \
+        ${(f)"$(command wtf list -a 2>/dev/null | cut -f2)"}
+      ;;
+    arguments)
+      case $words[2] in
+        list) _arguments '(-a --all)'{-a,--all}'[include unavailable annotations]' '--json[emit JSON]' ;;
+        topic)
+          if (( CURRENT == 3 )); then _values 'topic command' 'new[create topic]' 'edit[edit topic]'
+          elif [[ $words[3] == edit ]]; then _values 'topic' ${(f)"$(command wtf list -a 2>/dev/null | awk -F '\t' '$1 == "topic" {print $2}')"}
+          else _message 'topic title'; fi ;;
+        cache)
+          if (( CURRENT == 3 )); then _values 'cache command' 'status[show cache status]' 'refresh[refresh cache]'
+          elif [[ $words[3] == status ]]; then _arguments '--json[emit JSON]'; fi ;;
+        init) _values 'shell' zsh ;;
+        completion) _values 'shell' zsh bash fish ;;
+        *) _values 'command' ${(f)"$(command wtf list -a 2>/dev/null | cut -f2)"} ;;
+      esac
+      ;;
+  esac
+}
+_wtf "$@"
 `
-const bashCompletion = `complete -W 'list topic cache init completion version' wtf
+const bashCompletion = `_wtf_complete() {
+  local cur prev
+  cur=${COMP_WORDS[COMP_CWORD]}
+  prev=${COMP_WORDS[COMP_CWORD-1]}
+  if (( COMP_CWORD == 1 )); then
+    COMPREPLY=( $(compgen -W "list topic cache init completion version $(command wtf list -a 2>/dev/null | cut -f2)" -- "$cur") )
+  elif [[ ${COMP_WORDS[1]} == list ]]; then
+    COMPREPLY=( $(compgen -W '-a --all --json' -- "$cur") )
+  elif [[ ${COMP_WORDS[1]} == topic && $COMP_CWORD == 2 ]]; then
+    COMPREPLY=( $(compgen -W 'new edit' -- "$cur") )
+  elif [[ ${COMP_WORDS[1]} == cache && $COMP_CWORD == 2 ]]; then
+    COMPREPLY=( $(compgen -W 'status refresh' -- "$cur") )
+  elif [[ ${COMP_WORDS[1]} == cache && ${COMP_WORDS[2]} == status ]]; then
+    COMPREPLY=( $(compgen -W '--json' -- "$cur") )
+  elif [[ ${COMP_WORDS[1]} == init ]]; then
+    COMPREPLY=( $(compgen -W 'zsh' -- "$cur") )
+  elif [[ ${COMP_WORDS[1]} == completion ]]; then
+    COMPREPLY=( $(compgen -W 'zsh bash fish' -- "$cur") )
+  elif [[ ${COMP_WORDS[1]} == topic && ${COMP_WORDS[2]} == edit ]]; then
+    COMPREPLY=( $(compgen -W "$(command wtf list -a 2>/dev/null | awk -F '\t' '$1 == "topic" {print $2}')" -- "$cur") )
+  fi
+}
+complete -F _wtf_complete wtf
 `
-const fishCompletion = `complete -c wtf -f -a 'list topic cache init completion version'
+const fishCompletion = `complete -c wtf -f
+function __wtf_topic_ids
+  command wtf list -a 2>/dev/null | awk -F '\t' '$1 == "topic" {print $2}'
+end
+complete -c wtf -n '__fish_use_subcommand' -a list -d 'List commands'
+complete -c wtf -n '__fish_use_subcommand' -a topic -d 'Author topics'
+complete -c wtf -n '__fish_use_subcommand' -a cache -d 'Inspect package cache'
+complete -c wtf -n '__fish_use_subcommand' -a init -d 'Emit shell integration'
+complete -c wtf -n '__fish_use_subcommand' -a completion -d 'Emit completions'
+complete -c wtf -n '__fish_use_subcommand' -a version -d 'Print version'
+complete -c wtf -n '__fish_seen_subcommand_from list' -s a -l all -d 'Include unavailable annotations'
+complete -c wtf -n '__fish_seen_subcommand_from list' -l json -d 'Emit JSON'
+complete -c wtf -n '__fish_seen_subcommand_from topic; and not __fish_seen_subcommand_from new edit' -a 'new edit'
+complete -c wtf -n '__fish_seen_subcommand_from topic; and __fish_seen_subcommand_from edit' -a '(__wtf_topic_ids)'
+complete -c wtf -n '__fish_seen_subcommand_from cache; and not __fish_seen_subcommand_from status refresh' -a 'status refresh'
+complete -c wtf -n '__fish_seen_subcommand_from cache; and __fish_seen_subcommand_from status' -l json -d 'Emit JSON'
+complete -c wtf -n '__fish_seen_subcommand_from init' -a zsh
+complete -c wtf -n '__fish_seen_subcommand_from completion' -a 'zsh bash fish'
 `

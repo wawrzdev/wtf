@@ -26,6 +26,8 @@ nfpms:
     license: MIT
     formats: [deb, archlinux]
     bindir: /usr/bin
+    dependencies:
+      - fzf
 checksum:
   name_template: checksums.txt
 changelog:

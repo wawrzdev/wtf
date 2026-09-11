@@ -26,6 +26,7 @@ type Package struct {
 	Name     string   `json:"name"`
 	Version  string   `json:"version,omitempty"`
 	Commands []string `json:"commands"`
+	Public   bool     `json:"public"`
 	Stale    bool     `json:"stale,omitempty"`
 }
 type ProviderState struct {
@@ -75,6 +76,11 @@ func DefaultProviders() []Provider {
 func Load(ctx context.Context, path string, refresh bool, providers []Provider) (Cache, []Status, error) {
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
+	unlock, err := lockCache(ctx, path+".lock")
+	if err != nil {
+		return Cache{}, nil, err
+	}
+	defer unlock()
 	c := Cache{Schema: Schema, Providers: map[string]ProviderState{}}
 	b, err := os.ReadFile(path)
 	if err == nil {
@@ -90,7 +96,7 @@ func Load(ctx context.Context, path string, refresh bool, providers []Provider) 
 	for _, p := range providers {
 		fp := p.Fingerprint()
 		old, has := c.Providers[p.Name]
-		needs := refresh || !has || old.Fingerprint != fp || now.Sub(old.RefreshedAt) > 24*time.Hour
+		needs := refresh || !has || old.Stale || old.Fingerprint != fp || now.Sub(old.RefreshedAt) > 24*time.Hour
 		if needs {
 			pkgs, e := p.Discover(ctx)
 			changed = true
@@ -102,7 +108,7 @@ func Load(ctx context.Context, path string, refresh bool, providers []Provider) 
 				}
 				c.Providers[p.Name] = old
 			} else if e != nil {
-				c.Providers[p.Name] = ProviderState{Name: p.Name, Fingerprint: fp, RefreshedAt: now, Stale: true, Error: e.Error()}
+				c.Providers[p.Name] = ProviderState{Name: p.Name, Fingerprint: fp, Stale: true, Error: e.Error()}
 			} else {
 				c.Providers[p.Name] = ProviderState{Name: p.Name, Fingerprint: fp, RefreshedAt: now, Packages: pkgs}
 			}
@@ -171,12 +177,23 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 	defer cancel()
 	cmd := exec.CommandContext(cctx, p, args...)
 	cmd.Stdin = nil
-	cmd.Env = append(os.Environ(), "PAGER=cat", "GIT_PAGER=cat", "NO_COLOR=1")
+	cmd.Env = commandEnv()
 	b, e := cmd.Output()
 	if cctx.Err() != nil {
 		return "", fmt.Errorf("%s timed out", name)
 	}
 	return string(b), e
+}
+func commandEnv() []string {
+	blocked := map[string]bool{"PAGER": true, "GIT_PAGER": true, "NO_COLOR": true, "LC_ALL": true, "LANG": true}
+	env := make([]string, 0, len(os.Environ())+5)
+	for _, item := range os.Environ() {
+		key, _, _ := strings.Cut(item, "=")
+		if !blocked[key] {
+			env = append(env, item)
+		}
+	}
+	return append(env, "PAGER=cat", "GIT_PAGER=cat", "NO_COLOR=1", "LC_ALL=C", "LANG=C")
 }
 func discoverBrew(ctx context.Context) ([]Package, error) {
 	out, e := run(ctx, "brew", "leaves")
@@ -194,6 +211,16 @@ func discoverBrew(ctx context.Context) ([]Package, error) {
 			}
 		}
 		p.Commands = executables(filepath.Join(root, "bin"))
+		if info, err := run(ctx, "brew", "info", "--json=v2", name); err == nil {
+			var data struct {
+				Formulae []struct {
+					Tap string `json:"tap"`
+				} `json:"formulae"`
+			}
+			if json.Unmarshal([]byte(info), &data) == nil && len(data.Formulae) == 1 && data.Formulae[0].Tap == "homebrew/core" {
+				p.Public = true
+			}
+		}
 		if len(p.Commands) > 0 {
 			result = append(result, p)
 		}
@@ -305,7 +332,8 @@ func discoverCargo(context.Context) ([]Package, error) {
 				cmds = append(cmds, x)
 			}
 		}
-		r = append(r, Package{Provider: "cargo", Name: cf[0], Version: cf[1], Commands: cmds})
+		public := strings.Contains(coord, "registry+https://github.com/rust-lang/crates.io-index") || strings.Contains(coord, "registry+https://index.crates.io/")
+		r = append(r, Package{Provider: "cargo", Name: cf[0], Version: cf[1], Commands: cmds, Public: public})
 	}
 	return r, s.Err()
 }
@@ -388,7 +416,8 @@ func cargoHome() string {
 	if v := os.Getenv("CARGO_HOME"); v != "" {
 		return v
 	}
-	return filepath.Join(dataHome(), "cargo")
+	h, _ := os.UserHomeDir()
+	return filepath.Join(h, ".cargo")
 }
 func goBin() string {
 	if v := os.Getenv("GOBIN"); v != "" {
@@ -432,9 +461,9 @@ func fingerprintPaths(paths []string) string {
 	var b strings.Builder
 	sort.Strings(paths)
 	for _, p := range paths {
-		filepath.WalkDir(p, func(path string, d fs.DirEntry, e error) error {
+		err := filepath.WalkDir(p, func(path string, d fs.DirEntry, e error) error {
 			if e != nil {
-				return nil
+				return e
 			}
 			if path != p && d.IsDir() {
 				return filepath.SkipDir
@@ -445,6 +474,9 @@ func fingerprintPaths(paths []string) string {
 			}
 			return nil
 		})
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(&b, "error:%s:%v;", p, err)
+		}
 	}
 	return b.String()
 }

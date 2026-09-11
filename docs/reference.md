@@ -22,5 +22,6 @@ shell resolution is unavailable. Simple aliases may use the resolved executable'
 tldr, and native docs. Cycles and expansions containing shell operators are displayed without
 guessing a target.
 
-`wtf completion zsh`, `bash`, or `fish` prints a basic completion definition. There is deliberately
+`wtf completion zsh`, `bash`, or `fish` prints contextual completions for commands, subcommands,
+options, and locally known command/topic IDs. There is deliberately
 no `how` command in this release.

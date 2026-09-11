@@ -75,7 +75,7 @@ func readPath(path string, topics bool) ([]Entry, []error) {
 		return x, errorSlice(e)
 	}
 	var files []string
-	filepath.WalkDir(path, func(p string, d fs.DirEntry, e error) error {
+	walkErr := filepath.WalkDir(path, func(p string, d fs.DirEntry, e error) error {
 		if e != nil {
 			return e
 		}
@@ -84,6 +84,9 @@ func readPath(path string, topics bool) ([]Entry, []error) {
 		}
 		return nil
 	})
+	if walkErr != nil {
+		return nil, []error{walkErr}
+	}
 	sort.Strings(files)
 	var out []Entry
 	var errs []error

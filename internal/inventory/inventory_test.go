@@ -2,8 +2,10 @@ package inventory
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -19,7 +21,7 @@ func TestProviderFixturesHomebrewMiseUV(t *testing.T) {
 	}
 	brewPrefix := filepath.Join(d, "brew", "ripgrep")
 	writeExec(t, filepath.Join(brewPrefix, "bin", "rg"), "#!/bin/sh\n")
-	writeExec(t, filepath.Join(bin, "brew"), "#!/bin/sh\ncase \"$1 $2 $3\" in\n  leaves*) echo ripgrep;;\n  '--prefix ripgrep'*) echo \"$BREW_FIXTURE\";;\n  'list --versions ripgrep') echo 'ripgrep 14.1.0';;\nesac\n")
+	writeExec(t, filepath.Join(bin, "brew"), "#!/bin/sh\ncase \"$1 $2 $3\" in\n  leaves*) echo ripgrep;;\n  '--prefix ripgrep'*) echo \"$BREW_FIXTURE\";;\n  'list --versions ripgrep') echo 'ripgrep 14.1.0';;\n  'info --json=v2 ripgrep') echo '{\"formulae\":[{\"tap\":\"homebrew/core\"}]}';;\nesac\n")
 	writeExec(t, filepath.Join(bin, "mise"), "#!/bin/sh\necho 'node 24.0.0'\n")
 	writeExec(t, filepath.Join(bin, "uv"), "#!/bin/sh\nprintf 'black v25.1.0\\n- black\\n- blackd\\n'\n")
 	t.Setenv("PATH", bin)
@@ -27,7 +29,7 @@ func TestProviderFixturesHomebrewMiseUV(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(d, "data"))
 	writeExec(t, filepath.Join(d, "data", "mise", "installs", "node", "24.0.0", "bin", "node"), "#!/bin/sh\n")
 	b, e := discoverBrew(context.Background())
-	if e != nil || len(b) != 1 || b[0].Version != "14.1.0" || b[0].Commands[0] != "rg" {
+	if e != nil || len(b) != 1 || b[0].Version != "14.1.0" || b[0].Commands[0] != "rg" || !b[0].Public {
 		t.Fatalf("brew %#v %v", b, e)
 	}
 	m, e := discoverMise(context.Background())
@@ -47,12 +49,18 @@ func TestAPTAndPacmanFilteringFixtures(t *testing.T) {
 		t.Fatal(e)
 	}
 	writeExec(t, filepath.Join(bin, "dpkg-query"), "#!/bin/sh\nif [ \"$1\" = -S ]; then echo 'ripgrep: /usr/bin/rg'; else printf '14.1 no optional'; fi\n")
-	writeExec(t, filepath.Join(bin, "pacman"), "#!/bin/sh\nif [ \"$1\" = -Qo ]; then echo '/usr/bin/rg is owned by ripgrep 14.1'; else printf 'Groups : None\\nInstall Reason : Explicitly installed'; fi\n")
+	writeExec(t, filepath.Join(bin, "pacman"), "#!/bin/sh\nprintf '%s' \"$LC_ALL\" > \"$LOCALE_LOG\"\nif [ \"$1\" = -Qo ]; then echo '/usr/bin/rg is owned by ripgrep 14.1'; else printf 'Groups : None\\nInstall Reason : Explicitly installed'; fi\n")
 	t.Setenv("PATH", bin)
 	t.Setenv("WTF_TEST_ROOT", d)
+	t.Setenv("LC_ALL", "de_DE.UTF-8")
+	localeLog := filepath.Join(d, "locale")
+	t.Setenv("LOCALE_LOG", localeLog)
 	pkgs := ExactSystem(context.Background(), "rg", "/usr/bin/rg")
 	if len(pkgs) != 2 {
 		t.Fatalf("packages %#v", pkgs)
+	}
+	if b, e := os.ReadFile(localeLog); e != nil || string(b) != "C" {
+		t.Fatalf("locale %q %v", b, e)
 	}
 	extended := filepath.Join(d, "var", "lib", "apt", "extended_states")
 	if e := os.MkdirAll(filepath.Dir(extended), 0700); e != nil {
@@ -103,6 +111,10 @@ func TestCacheLifecycleAndStaleFallback(t *testing.T) {
 	if e != nil || !c.Providers["fixture"].Stale || len(c.Providers["fixture"].Packages) != 1 {
 		t.Fatalf("stale %#v %v", c, e)
 	}
+	_, _, e = Load(context.Background(), path, false, []Provider{p})
+	if e != nil || calls.Load() != 3 {
+		t.Fatalf("stale refresh was not immediately retried: calls=%d err=%v", calls.Load(), e)
+	}
 }
 func TestCorruptExpiredAndConcurrentCache(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cache.json")
@@ -143,5 +155,80 @@ func TestExpiredRefresh(t *testing.T) {
 	_, _, e := Load(context.Background(), path, false, []Provider{p})
 	if e != nil || !called {
 		t.Fatalf("called %v error %v", called, e)
+	}
+}
+
+func TestInitialFailedRefreshRetriesImmediately(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache.json")
+	calls := 0
+	p := Provider{Name: "failed", Fingerprint: func() string { return "same" }, Discover: func(context.Context) ([]Package, error) { calls++; return nil, errors.New("offline") }}
+	for range 2 {
+		c, _, e := Load(context.Background(), path, false, []Provider{p})
+		if e != nil {
+			t.Fatal(e)
+		}
+		if !c.Providers["failed"].Stale {
+			t.Fatal("failure not marked stale")
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("failed provider called %d times", calls)
+	}
+}
+
+func TestCargoHomeDefaultAndOverride(t *testing.T) {
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(h, "xdg"))
+	t.Setenv("CARGO_HOME", "")
+	if got := cargoHome(); got != filepath.Join(h, ".cargo") {
+		t.Fatalf("default %q", got)
+	}
+	t.Setenv("CARGO_HOME", filepath.Join(h, "configured-cargo"))
+	if got := cargoHome(); got != filepath.Join(h, "configured-cargo") {
+		t.Fatalf("override %q", got)
+	}
+}
+
+func TestCacheProcessHelper(t *testing.T) {
+	path := os.Getenv("WTF_CACHE_PROCESS_PATH")
+	if path == "" {
+		return
+	}
+	p := Provider{Name: "process", Fingerprint: func() string { return "same" }, Discover: func(context.Context) ([]Package, error) {
+		time.Sleep(40 * time.Millisecond)
+		return []Package{{Provider: "process", Name: "pkg", Commands: []string{"cmd"}}}, nil
+	}}
+	if _, _, e := Load(context.Background(), path, true, []Provider{p}); e != nil {
+		t.Fatal(e)
+	}
+}
+
+func TestConcurrentProcessesCoordinateCache(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "packages.json")
+	var commands []*exec.Cmd
+	for range 6 {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestCacheProcessHelper$")
+		cmd.Env = append(os.Environ(), "WTF_CACHE_PROCESS_PATH="+path)
+		if e := cmd.Start(); e != nil {
+			t.Fatal(e)
+		}
+		commands = append(commands, cmd)
+	}
+	for _, cmd := range commands {
+		if e := cmd.Wait(); e != nil {
+			t.Fatalf("helper: %v", e)
+		}
+	}
+	b, e := os.ReadFile(path)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var c Cache
+	if e := json.Unmarshal(b, &c); e != nil {
+		t.Fatalf("corrupt cache: %v: %s", e, b)
+	}
+	if len(c.Providers["process"].Packages) != 1 {
+		t.Fatalf("cache %#v", c)
 	}
 }

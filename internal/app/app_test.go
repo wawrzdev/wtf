@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wawrzdev/wtf/internal/config"
 	"github.com/wawrzdev/wtf/internal/content"
 	"github.com/wawrzdev/wtf/internal/inventory"
 )
@@ -77,6 +79,9 @@ func TestExplicitPathAndShellComplex(t *testing.T) {
 	}
 }
 func TestCheatEligibilityCacheAndOffline(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	calls := 0
 	old := cheatBaseURL
 	oldClient := cheatHTTPClient
@@ -87,7 +92,7 @@ func TestCheatEligibilityCacheAndOffline(t *testing.T) {
 	})}
 	defer func() { cheatBaseURL = old; cheatHTTPClient = oldClient }()
 	cache := t.TempDir()
-	x := Record{ID: "rg", Kind: "command", Packages: []inventory.Package{{Provider: "x", Name: "ripgrep"}}}
+	x := Record{ID: "rg", Kind: "command", Packages: []inventory.Package{{Provider: "x", Name: "ripgrep", Public: true}}}
 	doc := compose(context.Background(), x, docOptions{CheatEnabled: true, CacheDir: cache})
 	if !strings.Contains(doc, "public cheat") || calls != 1 {
 		t.Fatal(doc, calls)
@@ -102,6 +107,11 @@ func TestCheatEligibilityCacheAndOffline(t *testing.T) {
 	_ = compose(context.Background(), ann, docOptions{CheatEnabled: true, CacheDir: cache})
 	if calls != 0 {
 		t.Fatal("annotation-only contacted server")
+	}
+	privatePackage := Record{ID: "corp", Kind: "command", Packages: []inventory.Package{{Provider: "go", Name: "corp.example/tool"}}}
+	_ = compose(context.Background(), privatePackage, docOptions{CheatEnabled: true, CacheDir: cache})
+	if calls != 0 {
+		t.Fatal("unverified package contacted server")
 	}
 }
 
@@ -182,13 +192,19 @@ func TestInitializedZshAliasCycleProtocol(t *testing.T) {
 
 func TestPickerUsesNativeKeysAndLocalPreview(t *testing.T) {
 	d := t.TempDir()
+	t.Setenv("HOME", d)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(d, "cache"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(d, "data"))
 	capture := filepath.Join(d, "args")
+	input := filepath.Join(d, "input")
 	fzf := filepath.Join(d, "fzf")
-	mustFile(t, fzf, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE\"\nexit 130\n", 0700)
+	mustFile(t, fzf, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE\"\npayload=$(cat)\nprintf '%s\\n' \"$payload\" > \"$INPUT\"\nprintf '%s\\n' \"$payload\" | sed -n '1p'\n", 0700)
 	t.Setenv("PATH", d+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CAPTURE", capture)
-	r := runtime{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
-	if e := r.picker(context.Background(), []Record{{ID: "rg", Kind: "command"}}, ""); e != nil {
+	t.Setenv("INPUT", input)
+	var pickerOut bytes.Buffer
+	r := runtime{stdout: &pickerOut, stderr: &bytes.Buffer{}}
+	if e := r.picker(context.Background(), []Record{{ID: "rg", Kind: "command", Summary: "hello\tbreak\n\x1b[31mred"}}, ""); e != nil {
 		t.Fatal(e)
 	}
 	b, e := os.ReadFile(capture)
@@ -196,8 +212,111 @@ func TestPickerUsesNativeKeysAndLocalPreview(t *testing.T) {
 		t.Fatal(e)
 	}
 	s := string(b)
-	if strings.Contains(s, "--bind") || !strings.Contains(s, "--local-only") {
+	if strings.Contains(s, "--bind") || !strings.Contains(s, "--local-only -- {1}") || !strings.Contains(s, "--with-nth=2") {
 		t.Fatalf("fzf args %q", s)
+	}
+	row, e := os.ReadFile(input)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if strings.Count(string(row), "\n") != 1 || strings.ContainsRune(string(row), '\x1b') || !strings.HasPrefix(string(row), "rg\t") {
+		t.Fatalf("unsafe picker row %q", row)
+	}
+	if !strings.Contains(pickerOut.String(), "# rg") {
+		t.Fatalf("selected hidden id was not resolved: %q", pickerOut.String())
+	}
+}
+
+func TestShellResolutionValidationAndAvailability(t *testing.T) {
+	for _, exp := range []string{"ls $HOME", "ls $(id)", "ls `id`", "ls (id)", "ls; id"} {
+		s := &ShellResolution{Kind: "alias", Name: "ll", Expansion: exp, Target: "ls"}
+		parseShell(s)
+		if !s.Complex || s.Target != "" {
+			t.Errorf("accepted %q: %#v", exp, s)
+		}
+	}
+	s := &ShellResolution{Kind: "alias", Name: "ll", Expansion: "git status", Target: "ls"}
+	parseShell(s)
+	if !s.Complex || s.Target != "" {
+		t.Fatalf("supplied target bypassed validation: %#v", s)
+	}
+	h := setup(t)
+	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "ff"), "# @func ff — fixture\n", 0600)
+	var out, err bytes.Buffer
+	if e := Run(context.Background(), []string{"--shell-kind", "function", "ff", "ff () { echo hi; }", "ff"}, nil, &out, &err, "x"); e != nil {
+		t.Fatal(e)
+	}
+	if !strings.Contains(out.String(), "Availability: available") {
+		t.Fatal(out.String())
+	}
+}
+
+func TestEditedTopicRejectsChangedIdentityBeforeHook(t *testing.T) {
+	h := setup(t)
+	path := filepath.Join(h, "data", "wtf", "topics", "keep.md")
+	mustFile(t, path, "---\nschema: 1\nid: keep\nkind: topic\ntitle: Keep\nsummary: ok\n---\n\n# Keep\n", 0600)
+	editor := filepath.Join(h, "bin", "editor")
+	hook := filepath.Join(h, "bin", "hook")
+	log := filepath.Join(h, "hook-ran")
+	mustFile(t, editor, "#!/bin/sh\nprintf '%s\\n' '---' 'schema: 1' 'id: changed' 'kind: topic' 'title: Changed' 'summary: bad' '---' > \"$1\"\n", 0700)
+	mustFile(t, hook, "#!/bin/sh\ntouch \"$HOOK_LOG\"\n", 0700)
+	t.Setenv("EDITOR", editor)
+	t.Setenv("HOOK_LOG", log)
+	r := runtime{cfg: config.Config{}, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+	r.cfg.Topics.PostWrite = []string{hook}
+	if e := r.editFile(context.Background(), path, "keep"); e == nil || !strings.Contains(e.Error(), "id changed") {
+		t.Fatalf("error %v", e)
+	}
+	if _, e := os.Stat(log); !errors.Is(e, os.ErrNotExist) {
+		t.Fatalf("hook ran: %v", e)
+	}
+	mustFile(t, path, "---\nschema: 1\nid: keep\nkind: topic\ntitle: Keep\nsummary: ok\n---\n", 0600)
+	mustFile(t, editor, "#!/bin/sh\nprintf '%s\\n' '---' 'schema: 0' 'id: keep' 'kind: topic' 'title: Keep' 'summary: bad' '---' > \"$1\"\n", 0700)
+	if e := r.editFile(context.Background(), path, "keep"); e == nil || !strings.Contains(e.Error(), "schema must be 1") {
+		t.Fatalf("schema error %v", e)
+	}
+}
+
+func TestAmbiguousTopicPickerPrefiltersAndReportsFailure(t *testing.T) {
+	d := t.TempDir()
+	fzf := filepath.Join(d, "fzf")
+	capture := filepath.Join(d, "args")
+	t.Setenv("PATH", d+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CAPTURE", capture)
+	topics := []Record{{ID: "git-one", Kind: "topic", Title: "Git one", Topic: &content.Entry{ID: "git-one", Sources: []content.Source{{Path: filepath.Join(d, "git-one.md"), Line: 1}}}}}
+	mustFile(t, fzf, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE\"\nexit 130\n", 0700)
+	r := runtime{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+	if e := r.topicPicker(context.Background(), topics, "git"); e != nil {
+		t.Fatal(e)
+	}
+	b, _ := os.ReadFile(capture)
+	if !strings.Contains(string(b), "--query\ngit\n") {
+		t.Fatalf("args %q", b)
+	}
+	mustFile(t, fzf, "#!/bin/sh\nexit 2\n", 0700)
+	if e := r.topicPicker(context.Background(), topics, "git"); e == nil || !strings.Contains(e.Error(), "fzf") {
+		t.Fatalf("execution failure %v", e)
+	}
+}
+
+func TestPlainCacheStatusIncludesProviderError(t *testing.T) {
+	var out bytes.Buffer
+	writeCacheStatus(&out, []inventory.Status{{Provider: "uv", Stale: true, Error: "offline\tfailed"}})
+	if !strings.Contains(out.String(), "offline failed") {
+		t.Fatal(out.String())
+	}
+}
+
+func TestCompletionsCoverShippedContexts(t *testing.T) {
+	for shell, script := range map[string]string{"zsh": zshCompletion, "bash": bashCompletion, "fish": fishCompletion} {
+		for _, want := range []string{"list", "topic", "cache", "init", "completion", "version", "refresh", "edit", "zsh", "bash", "fish", "wtf list"} {
+			if !strings.Contains(script, want) {
+				t.Errorf("%s completion missing %q", shell, want)
+			}
+		}
+		if !strings.Contains(script, "--json") && !strings.Contains(script, "-l json") {
+			t.Errorf("%s completion missing json option", shell)
+		}
 	}
 }
 func setup(t *testing.T) string {

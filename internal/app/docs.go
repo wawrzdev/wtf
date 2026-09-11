@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/wawrzdev/wtf/internal/inventory"
 )
 
 type docOptions struct {
@@ -80,17 +83,20 @@ func compose(ctx context.Context, r Record, opt docOptions) string {
 	if r.Shell != nil && r.Shell.Target != "" && !r.Shell.Complex && !r.Shell.Cycle {
 		name = r.Shell.Target
 	}
-	tldr := localTLDR(name)
+	tldr, tldrErr := localTLDR(name)
 	if tldr != "" {
 		r.HasTLDR = true
 		fmt.Fprintf(&b, "\n## tldr (local)\n\n%s\n", tldr)
+	}
+	if tldrErr != nil {
+		fmt.Fprintf(&b, "\n## tldr (local)\n\nUnavailable: %v\n", tldrErr)
 	}
 	if !opt.LocalOnly && r.Available && r.Kind != "topic" && !(r.Shell != nil && (r.Shell.Kind == "function" || r.Shell.Complex || r.Shell.Cycle)) {
 		if h, label := nativeHelp(ctx, r.Path, name); h != "" {
 			fmt.Fprintf(&b, "\n## %s\n\n```text\n%s\n```\n", label, trimOutput(h, 24000))
 		}
 	}
-	eligible := len(r.Packages) > 0 || tldr != ""
+	eligible := tldr != "" || hasPublicPackage(r.Packages)
 	if !opt.LocalOnly && opt.CheatEnabled && eligible && (r.Shell == nil || (r.Shell.Kind != "alias" && r.Shell.Kind != "function")) {
 		text, stale, note := cheat(ctx, name, opt.CacheDir)
 		if text != "" {
@@ -148,7 +154,7 @@ func runDoc(ctx context.Context, path string, args []string, timeout time.Durati
 	defer cancel()
 	cmd := exec.Command(path, args...)
 	cmd.Stdin = nil
-	cmd.Env = append(os.Environ(), "PAGER=cat", "MANPAGER=cat", "GIT_PAGER=cat", "NO_COLOR=1", "TERM=dumb")
+	cmd.Env = docEnv()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -167,6 +173,17 @@ func runDoc(ctx context.Context, path string, args []string, timeout time.Durati
 		return out.String(), false
 	}
 }
+func docEnv() []string {
+	blocked := map[string]bool{"PAGER": true, "MANPAGER": true, "GIT_PAGER": true, "NO_COLOR": true, "TERM": true}
+	env := make([]string, 0, len(os.Environ())+5)
+	for _, item := range os.Environ() {
+		key, _, _ := strings.Cut(item, "=")
+		if !blocked[key] {
+			env = append(env, item)
+		}
+	}
+	return append(env, "PAGER=cat", "MANPAGER=cat", "GIT_PAGER=cat", "NO_COLOR=1", "TERM=dumb")
+}
 func pipeDoc(ctx context.Context, path string, args []string, input string) (string, bool) {
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Stdin = strings.NewReader(input)
@@ -174,9 +191,9 @@ func pipeDoc(ctx context.Context, path string, args []string, input string) (str
 	return string(b), e == nil
 }
 
-func localTLDR(name string) string {
+func localTLDR(name string) (string, error) {
 	if name == "" || strings.Contains(name, "/") {
-		return ""
+		return "", nil
 	}
 	h, _ := os.UserHomeDir()
 	roots := localTLDRRoots(h)
@@ -185,23 +202,31 @@ func localTLDR(name string) string {
 			continue
 		}
 		var found string
-		filepath.WalkDir(root, func(p string, d os.DirEntry, e error) error {
+		walkErr := filepath.WalkDir(root, func(p string, d os.DirEntry, e error) error {
 			if e != nil {
-				return nil
+				return e
 			}
 			if !d.IsDir() && d.Name() == name+".md" {
 				found = p
-				return io.EOF
+				return errTLDRFound
 			}
 			return nil
 		})
+		if walkErr != nil && !errors.Is(walkErr, errTLDRFound) && !errors.Is(walkErr, os.ErrNotExist) {
+			return "", walkErr
+		}
 		if found != "" {
-			b, _ := os.ReadFile(found)
-			return strings.TrimSpace(string(b))
+			b, e := os.ReadFile(found)
+			if e != nil {
+				return "", e
+			}
+			return strings.TrimSpace(string(b)), nil
 		}
 	}
-	return ""
+	return "", nil
 }
+
+var errTLDRFound = errors.New("tldr page found")
 
 func localTLDRRoots(home string) []string {
 	roots := []string{filepath.Join(home, ".cache", "tealdeer"), filepath.Join(home, ".local", "share", "tldr")}
@@ -214,7 +239,7 @@ func localTLDRRoots(home string) []string {
 	return roots
 }
 
-func localTLDRIDs() []string {
+func localTLDRIDs() ([]string, error) {
 	h, _ := os.UserHomeDir()
 	seen := map[string]bool{}
 	var ids []string
@@ -222,8 +247,11 @@ func localTLDRIDs() []string {
 		if root == "" {
 			continue
 		}
-		_ = filepath.WalkDir(root, func(_ string, d os.DirEntry, e error) error {
-			if e != nil || d.IsDir() || filepath.Ext(d.Name()) != ".md" {
+		err := filepath.WalkDir(root, func(_ string, d os.DirEntry, e error) error {
+			if e != nil {
+				return e
+			}
+			if d.IsDir() || filepath.Ext(d.Name()) != ".md" {
 				return nil
 			}
 			id := strings.TrimSuffix(d.Name(), ".md")
@@ -233,9 +261,21 @@ func localTLDRIDs() []string {
 			}
 			return nil
 		})
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return ids, err
+		}
 	}
 	sort.Strings(ids)
-	return ids
+	return ids, nil
+}
+
+func hasPublicPackage(packages []inventory.Package) bool {
+	for _, p := range packages {
+		if p.Public {
+			return true
+		}
+	}
+	return false
 }
 
 var cheatBaseURL = "https://cheat.sh/"
