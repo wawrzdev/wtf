@@ -185,6 +185,12 @@ func (r *runtime) lookup(ctx context.Context, args []string) error {
 			}
 			shell.Target = args[i+1]
 			i++
+		case "--shell-hop":
+			if shell == nil || i+2 >= len(args) {
+				return errors.New("invalid private shell hop")
+			}
+			shell.Hops = append(shell.Hops, ShellHop{Name: args[i+1], Expansion: args[i+2]})
+			i += 2
 		case "--shell-cycle":
 			if shell == nil {
 				return errors.New("invalid private shell cycle")
@@ -266,7 +272,41 @@ func parseShell(s *ShellResolution) {
 		s.Complex = true
 		return
 	}
-	if s.Cycle {
+	declaredCycle := s.Cycle
+	s.Cycle = false
+	if len(s.Hops) > 0 {
+		if s.Kind != "alias" || len(s.Hops) > 32 {
+			s.Complex = true
+			return
+		}
+		current := s.Name
+		seen := map[string]bool{}
+		for i, hop := range s.Hops {
+			if hop.Name != current || seen[current] || (i == 0 && hop.Expansion != s.Expansion) {
+				s.Complex = true
+				return
+			}
+			seen[current] = true
+			next, ok := simpleShellTarget(hop.Expansion)
+			if !ok {
+				s.Complex = true
+				return
+			}
+			current = next
+		}
+		if seen[current] || declaredCycle {
+			s.Cycle = true
+			return
+		}
+		if s.Complex || (suppliedTarget != "" && suppliedTarget != current) {
+			s.Complex = true
+			return
+		}
+		s.Target = current
+		return
+	}
+	if declaredCycle {
+		s.Cycle = true
 		return
 	}
 	target, ok := simpleShellTarget(s.Expansion)
@@ -435,14 +475,6 @@ func recordByID(records []Record, id string) (Record, bool) {
 		}
 	}
 	return Record{}, false
-}
-func isTerminalWriter(w io.Writer) bool {
-	f, ok := w.(*os.File)
-	if !ok {
-		return false
-	}
-	st, e := f.Stat()
-	return e == nil && st.Mode()&os.ModeCharDevice != 0
 }
 
 func (r *runtime) topicCommand(ctx context.Context, args []string) error {
@@ -657,23 +689,25 @@ function wtf() {
     elif (( $+aliases[$_wtf_name] )); then
       _wtf_kind=alias
       _wtf_value="${aliases[$_wtf_name]}"
-      local _wtf_current="$_wtf_name" _wtf_target=""
+      local _wtf_current="$_wtf_name" _wtf_target="" _wtf_expansion="" _wtf_word=""
+      local -a _wtf_words
       local -A _wtf_seen
+      local -i _wtf_depth=0
       while (( $+aliases[$_wtf_current] )); do
+		(( ++_wtf_depth > 32 )) && { _wtf_meta+=(--shell-complex); break; }
         if [[ -n "${_wtf_seen[$_wtf_current]}" ]]; then
           _wtf_meta+=(--shell-cycle)
           break
         fi
         _wtf_seen[$_wtf_current]=1
-        local _wtf_expansion="${aliases[$_wtf_current]}"
-        local -a _wtf_words
-        _wtf_words=( ${(z)_wtf_expansion} )
+		_wtf_expansion="${aliases[$_wtf_current]}"
+		_wtf_meta+=(--shell-hop "$_wtf_current" "$_wtf_expansion")
+		_wtf_words=( ${(z)_wtf_expansion} )
         if (( ${#_wtf_words} == 0 )); then
           _wtf_meta+=(--shell-complex)
           break
         fi
-        local _wtf_word
-        for _wtf_word in "${_wtf_words[@]}"; do
+		for _wtf_word in "${_wtf_words[@]}"; do
           if [[ "$_wtf_word" == '|' || "$_wtf_word" == '||' || "$_wtf_word" == '&' || "$_wtf_word" == '&&' || "$_wtf_word" == ';' || "$_wtf_word" == *'>'* || "$_wtf_word" == *'<'* || "$_wtf_word" == *'$'* || "$_wtf_word" == *$'\x60'* || "$_wtf_word" == *'('* || "$_wtf_word" == *')'* ]]; then
             _wtf_meta+=(--shell-complex)
             break 2

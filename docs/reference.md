@@ -18,9 +18,9 @@ cache refresh` requests all providers to rebuild.
 
 `wtf init zsh` prints a wrapper that checks active functions before aliases, then delegates to the
 binary. Metadata is passed as quoted arguments. Direct binary use remains supported and says live
-shell resolution is unavailable. Simple aliases may use the resolved executable's local package,
-tldr, and native docs. Cycles and expansions containing shell operators are displayed without
-guessing a target.
+shell resolution is unavailable. Simple alias chains, up to 32 hops, may use the resolved
+executable's local package, tldr, and native docs. Cycles, overlong chains, and expansions containing
+shell operators or substitutions are displayed without guessing a target.
 
 `wtf completion zsh`, `bash`, or `fish` prints contextual completions for commands, subcommands,
 options, and locally known command/topic IDs. There is deliberately

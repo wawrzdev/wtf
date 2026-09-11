@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -80,7 +81,8 @@ func TestExplicitPathAndShellComplex(t *testing.T) {
 }
 func TestCheatEligibilityCacheAndOffline(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	xdgCache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", xdgCache)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	calls := 0
 	old := cheatBaseURL
@@ -112,6 +114,12 @@ func TestCheatEligibilityCacheAndOffline(t *testing.T) {
 	_ = compose(context.Background(), privatePackage, docOptions{CheatEnabled: true, CacheDir: cache})
 	if calls != 0 {
 		t.Fatal("unverified package contacted server")
+	}
+	mustFile(t, filepath.Join(xdgCache, "tealdeer", "pages", "common", "private-topic.md"), "# looks public\n", 0600)
+	topic := Record{ID: "private-topic", Kind: "topic", Topic: &content.Entry{ID: "private-topic", Kind: "topic"}}
+	_ = compose(context.Background(), topic, docOptions{CheatEnabled: true, CacheDir: cache})
+	if calls != 0 {
+		t.Fatal("topic id was sent despite matching local tldr")
 	}
 }
 
@@ -190,6 +198,41 @@ func TestInitializedZshAliasCycleProtocol(t *testing.T) {
 	}
 }
 
+func TestInitializedZshAliasChainResolvesTargetWithoutLeak(t *testing.T) {
+	zsh, e := exec.LookPath("zsh")
+	if e != nil {
+		t.Skip("zsh unavailable")
+	}
+	h := setup(t)
+	initPath := filepath.Join(h, "init.zsh")
+	capture := filepath.Join(h, "args")
+	mustFile(t, initPath, zshInit, 0600)
+	mustFile(t, filepath.Join(h, "bin", "wtf"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE\"\n", 0700)
+	mustFile(t, filepath.Join(h, "bin", "ls"), "#!/bin/sh\nprintf 'target docs\\n'\n", 0700)
+	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "aa"), "# @alias aa — chained fixture\n", 0600)
+	cmd := exec.Command(zsh, "-fc", "source \"$INIT\"; alias aa=bb; alias bb=ls; wtf aa")
+	cmd.Env = append(os.Environ(), "INIT="+initPath, "CAPTURE="+capture, "PATH="+filepath.Join(h, "bin"))
+	out, e := cmd.CombinedOutput()
+	if e != nil {
+		t.Fatalf("zsh: %v: %s", e, out)
+	}
+	if len(out) != 0 {
+		t.Fatalf("zsh leaked output: %q", out)
+	}
+	b, e := os.ReadFile(capture)
+	if e != nil {
+		t.Fatal(e)
+	}
+	args := strings.Fields(string(b))
+	var rendered, stderr bytes.Buffer
+	if e := Run(context.Background(), args, nil, &rendered, &stderr, "x"); e != nil {
+		t.Fatalf("lookup: %v (%s)", e, stderr.String())
+	}
+	if !strings.Contains(rendered.String(), "Path: `"+filepath.Join(h, "bin", "ls")+"`") || !strings.Contains(rendered.String(), "target docs") {
+		t.Fatalf("target docs missing: %s", rendered.String())
+	}
+}
+
 func TestPickerUsesNativeKeysAndLocalPreview(t *testing.T) {
 	d := t.TempDir()
 	t.Setenv("HOME", d)
@@ -239,6 +282,11 @@ func TestShellResolutionValidationAndAvailability(t *testing.T) {
 	parseShell(s)
 	if !s.Complex || s.Target != "" {
 		t.Fatalf("supplied target bypassed validation: %#v", s)
+	}
+	chain := &ShellResolution{Kind: "alias", Name: "aa", Expansion: "bb", Target: "ls", Hops: []ShellHop{{Name: "aa", Expansion: "bb"}, {Name: "bb", Expansion: "ls $HOME"}}}
+	parseShell(chain)
+	if !chain.Complex || chain.Target != "" {
+		t.Fatalf("complex chained hop accepted: %#v", chain)
 	}
 	h := setup(t)
 	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "ff"), "# @func ff — fixture\n", 0600)
@@ -317,6 +365,49 @@ func TestCompletionsCoverShippedContexts(t *testing.T) {
 		if !strings.Contains(script, "--json") && !strings.Contains(script, "-l json") {
 			t.Errorf("%s completion missing json option", shell)
 		}
+	}
+}
+
+func TestTerminalHelper(t *testing.T) {
+	if os.Getenv("WTF_TTY_HELPER") == "" {
+		return
+	}
+	if !isTerminalWriter(os.Stdout) {
+		t.Fatal("stdout is not a terminal")
+	}
+	fmt.Fprint(os.Stdout, "TTY_TRUE")
+}
+
+func TestTerminalDetectionUsesIOCTL(t *testing.T) {
+	if isTerminalWriter(&bytes.Buffer{}) {
+		t.Fatal("captured writer reported as terminal")
+	}
+	null, e := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer null.Close()
+	if isTerminalWriter(null) {
+		t.Fatal("/dev/null reported as terminal")
+	}
+	script, e := exec.LookPath("script")
+	if e != nil {
+		t.Skip("script unavailable")
+	}
+	var cmd *exec.Cmd
+	if goRuntime.GOOS == "darwin" {
+		cmd = exec.Command(script, "-q", os.DevNull, os.Args[0], "-test.run=^TestTerminalHelper$")
+	} else {
+		line := shellQuote(os.Args[0]) + " -test.run=^TestTerminalHelper$"
+		cmd = exec.Command(script, "-q", "-e", "-c", line, os.DevNull)
+	}
+	cmd.Env = append(os.Environ(), "WTF_TTY_HELPER=1")
+	out, e := cmd.CombinedOutput()
+	if e != nil {
+		t.Fatalf("pty helper: %v: %s", e, out)
+	}
+	if !strings.Contains(string(out), "TTY_TRUE") {
+		t.Fatalf("PTY was not detected: %q", out)
 	}
 }
 func setup(t *testing.T) string {

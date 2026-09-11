@@ -97,7 +97,8 @@ func compose(ctx context.Context, r Record, opt docOptions) string {
 		}
 	}
 	eligible := tldr != "" || hasPublicPackage(r.Packages)
-	if !opt.LocalOnly && opt.CheatEnabled && eligible && (r.Shell == nil || (r.Shell.Kind != "alias" && r.Shell.Kind != "function")) {
+	commandRecord := r.Kind != "topic" && r.Kind != "alias" && r.Kind != "func" && r.Kind != "function"
+	if !opt.LocalOnly && opt.CheatEnabled && commandRecord && eligible && (r.Shell == nil || (r.Shell.Kind != "alias" && r.Shell.Kind != "function")) {
 		text, stale, note := cheat(ctx, name, opt.CacheDir)
 		if text != "" {
 			label := "cheat.sh"

@@ -26,12 +26,17 @@ type Record struct {
 	HasTLDR       bool                `json:"has_tldr"`
 }
 type ShellResolution struct {
-	Kind      string `json:"kind"`
+	Kind      string     `json:"kind"`
+	Name      string     `json:"name"`
+	Expansion string     `json:"expansion,omitempty"`
+	Target    string     `json:"target,omitempty"`
+	Complex   bool       `json:"complex,omitempty"`
+	Cycle     bool       `json:"cycle,omitempty"`
+	Hops      []ShellHop `json:"hops,omitempty"`
+}
+type ShellHop struct {
 	Name      string `json:"name"`
-	Expansion string `json:"expansion,omitempty"`
-	Target    string `json:"target,omitempty"`
-	Complex   bool   `json:"complex,omitempty"`
-	Cycle     bool   `json:"cycle,omitempty"`
+	Expansion string `json:"expansion"`
 }
 
 func buildRecords(anns, topics map[string]content.Entry, pkgs []inventory.Package, includeUnavailable bool) []Record {
