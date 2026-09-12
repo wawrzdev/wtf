@@ -26,6 +26,7 @@ archives:
 nfpms:
   - id: native-packages
     ids: [wtf]
+    file_name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     package_name: wtf
     vendor: wawrzdev
     homepage: https://github.com/wawrzdev/wtf
@@ -54,6 +55,9 @@ changelog:
       - '^docs:'
       - '^test:'
 release:
+  # Upload and verify all nine assets before the workflow publishes the immutable release.
+  draft: true
+  target_commitish: "{{ .Commit }}"
   github:
     owner: wawrzdev
     name: wtf
