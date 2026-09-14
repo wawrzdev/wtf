@@ -37,5 +37,8 @@ goreleaser release --snapshot --clean
 ```
 
 Confirm that `completions/wtf.bash`, `completions/wtf.zsh`, and `completions/wtf.fish` match the
-runtime output. A release tag is the only publishing trigger; ordinary pushes and pull requests run
-tests without publishing.
+runtime output. Native packages install the Bash completion as
+`/etc/bash_completion.d/wawrzdev-wtf`, which bash-completion loads eagerly as its compatibility
+directory and which avoids claiming a distribution-owned completion named `wtf`. Release archives
+retain `completions/wtf.bash` for Homebrew. A release tag is the only publishing trigger; ordinary
+pushes and pull requests run tests without publishing.
