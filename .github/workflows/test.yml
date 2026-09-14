@@ -27,6 +27,18 @@ jobs:
           distribution: goreleaser
           version: 'v2.18.1'
           args: check
+      - if: runner.os == 'Linux'
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: 'v2.18.1'
+          args: release --snapshot --clean
+      - if: runner.os == 'Linux'
+        name: Validate native package completion paths
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libarchive-tools
+          bash tests/validate-native-packages.sh dist
 
   archlinux:
     runs-on: ubuntu-latest
@@ -38,3 +50,19 @@ jobs:
       - run: go test ./...
       - run: go vet ./...
       - run: go test -race ./...
+
+  bash-completion-ubuntu-20:
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
+    steps:
+      - name: Install Ubuntu 20.04 bash-completion
+        run: |
+          apt-get update
+          apt-get install --yes bash-completion ca-certificates git
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify eager compatibility-directory loading
+        run: |
+          install -Dm644 completions/wtf.bash /etc/bash_completion.d/wawrzdev-wtf
+          bash --noprofile --norc -c \
+            '. /usr/share/bash-completion/bash_completion; complete -p wtf' \
+            | grep -Fx 'complete -F _wtf_complete wtf'

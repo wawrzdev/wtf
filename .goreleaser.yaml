@@ -41,7 +41,7 @@ nfpms:
       - fzf
     contents:
       - src: completions/wtf.bash
-        dst: /usr/share/bash-completion/completions/wtf
+        dst: /etc/bash_completion.d/wawrzdev-wtf
       - src: completions/wtf.zsh
         dst: /usr/share/zsh/site-functions/_wtf
       - src: completions/wtf.fish
