@@ -160,7 +160,11 @@ func mergeTLDR(records []Record) ([]Record, error) {
 			continue
 		}
 		seen[id] = len(records)
-		records = append(records, Record{ID: id, Kind: "command", HasTLDR: true})
+		x := Record{ID: id, Kind: "command", HasTLDR: true}
+		if paths := findAll(id); len(paths) > 0 {
+			x.Available, x.Path = true, paths[0]
+		}
+		records = append(records, x)
 	}
 	sortRecords(records)
 	return records, err

@@ -10,7 +10,7 @@ _wtf() {
       _values 'command' \
         'list[list commands]' 'topic[author topics]' 'cache[inspect package cache]' \
         'init[emit shell integration]' 'completion[emit completions]' 'version[print version]' \
-        ${(f)"$(command wtf list -a 2>/dev/null | cut -f2)"}
+        ${(f)"$(command wtf list 2>/dev/null | cut -f2)"}
       ;;
     arguments)
       case $words[2] in
@@ -24,7 +24,7 @@ _wtf() {
           elif [[ $words[3] == status ]]; then _arguments '--json[emit JSON]'; fi ;;
         init) _values 'shell' zsh ;;
         completion) _values 'shell' zsh bash fish ;;
-        *) _values 'command' ${(f)"$(command wtf list -a 2>/dev/null | cut -f2)"} ;;
+        *) _values 'command' ${(f)"$(command wtf list 2>/dev/null | cut -f2)"} ;;
       esac
       ;;
   esac

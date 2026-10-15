@@ -27,6 +27,7 @@ type runtime struct {
 	stdout, stderr      io.Writer
 	version             string
 	preview             bool
+	all                 bool
 }
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, version string) error {
@@ -172,6 +173,8 @@ func (r *runtime) lookup(ctx context.Context, args []string) error {
 			i = len(args)
 		case "--local-only":
 			localOnly = true
+		case "-a", "--all":
+			r.all = true
 		case "--preview":
 			// Private picker protocol: local-only docs rendered for the fzf preview pane.
 			localOnly = true
@@ -215,13 +218,7 @@ func (r *runtime) lookup(ctx context.Context, args []string) error {
 		if shell != nil {
 			return errors.New("missing query")
 		}
-		visible := make([]Record, 0, len(r.records))
-		for _, x := range r.records {
-			if visibleByDefault(x) {
-				visible = append(visible, x)
-			}
-		}
-		return r.picker(ctx, visible, "")
+		return r.picker(ctx, r.candidates(), "")
 	}
 	query := strings.Join(queryParts, " ")
 	if strings.Contains(query, "/") {
@@ -230,7 +227,16 @@ func (r *runtime) lookup(ctx context.Context, args []string) error {
 			return r.display(ctx, x, localOnly)
 		}
 	}
-	matches := matchRecords(r.records, query)
+	pool := r.candidates()
+	if shell != nil {
+		pool = r.records
+	}
+	matches := matchRecords(pool, query)
+	if len(matches) == 0 && !r.all && shell == nil {
+		if hidden := matchRecords(r.records, query); len(hidden) > 0 && strings.EqualFold(hidden[0].ID, query) {
+			return fmt.Errorf("%s is not installed; use `wtf -a %s` to read about it anyway", query, query)
+		}
+	}
 	if len(matches) == 0 {
 		if shell != nil {
 			matches = []Record{{ID: query, Kind: shell.Kind, Available: true}}
@@ -427,6 +433,21 @@ func (r *runtime) picker(ctx context.Context, records []Record, query string) er
 	}
 }
 
+// candidates are the records lookups and the picker consider: installed commands,
+// shell definitions, groups and topics, or every record with -a/--all.
+func (r *runtime) candidates() []Record {
+	if r.all {
+		return r.records
+	}
+	out := make([]Record, 0, len(r.records))
+	for _, x := range r.records {
+		if visibleByDefault(x) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
 // choose runs fzf over rows and returns the selected id, or "" when cancelled.
 func (r *runtime) choose(ctx context.Context, rows []listRow, query, header string) (string, error) {
 	fzf, e := exec.LookPath("fzf")
@@ -438,7 +459,10 @@ func (r *runtime) choose(ctx context.Context, rows []listRow, query, header stri
 		return "", e
 	}
 	preview := shellQuote(exe) + " --preview -- {1}"
-	args := []string{"--delimiter=\t", "--with-nth=2", "--layout=reverse", "--tiebreak=index", "--wrap", "--prompt=wtf ▸ ", "--header=" + header, "--preview", preview, "--preview-window=right,55%,wrap,border-left"}
+	if r.all {
+		preview = shellQuote(exe) + " --preview --all -- {1}"
+	}
+	args := []string{"--delimiter=\t", "--with-nth=2", "--layout=reverse", "--tiebreak=index", "--prompt=wtf ▸ ", "--header=" + header, "--preview", preview, "--preview-window=right,55%,wrap,border-left"}
 	if query != "" {
 		args = append(args, "--query", query)
 	}
@@ -717,6 +741,7 @@ const usage = `wtf — discover installed commands and read composed documentati
 Usage:
   wtf                         Open the interactive picker
   wtf <query>                 Resolve a document or prefilter the picker
+  wtf -a|--all [<query>]      Include commands that are not installed (tldr pages)
   wtf list [-a|--all] [--json]
   wtf topic new <title>
   wtf topic edit [query]
@@ -788,7 +813,7 @@ _wtf() {
       _values 'command' \
         'list[list commands]' 'topic[author topics]' 'cache[inspect package cache]' \
         'init[emit shell integration]' 'completion[emit completions]' 'version[print version]' \
-        ${(f)"$(command wtf list -a 2>/dev/null | cut -f2)"}
+        ${(f)"$(command wtf list 2>/dev/null | cut -f2)"}
       ;;
     arguments)
       case $words[2] in
@@ -802,7 +827,7 @@ _wtf() {
           elif [[ $words[3] == status ]]; then _arguments '--json[emit JSON]'; fi ;;
         init) _values 'shell' zsh ;;
         completion) _values 'shell' zsh bash fish ;;
-        *) _values 'command' ${(f)"$(command wtf list -a 2>/dev/null | cut -f2)"} ;;
+        *) _values 'command' ${(f)"$(command wtf list 2>/dev/null | cut -f2)"} ;;
       esac
       ;;
   esac
@@ -814,7 +839,7 @@ const bashCompletion = `_wtf_complete() {
   cur=${COMP_WORDS[COMP_CWORD]}
   prev=${COMP_WORDS[COMP_CWORD-1]}
   if (( COMP_CWORD == 1 )); then
-    COMPREPLY=( $(compgen -W "list topic cache init completion version $(command wtf list -a 2>/dev/null | cut -f2)" -- "$cur") )
+    COMPREPLY=( $(compgen -W "list topic cache init completion version $(command wtf list 2>/dev/null | cut -f2)" -- "$cur") )
   elif [[ ${COMP_WORDS[1]} == list ]]; then
     COMPREPLY=( $(compgen -W '-a --all --json' -- "$cur") )
   elif [[ ${COMP_WORDS[1]} == topic && $COMP_CWORD == 2 ]]; then

@@ -484,6 +484,7 @@ func TestShellHintOnlyForShellDefinitionsOutsidePreview(t *testing.T) {
 
 func TestPreviewFallsBackToPlainTextWithoutMdcat(t *testing.T) {
 	h := setup(t)
+	mustFile(t, filepath.Join(h, "bin", "rg"), "#!/bin/sh\n", 0700)
 	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "rg.md"), "---\nschema: 1\nid: rg\nkind: command\nsummary: Fast search\n---\n\n# rg body\n", 0600)
 	var o, e bytes.Buffer
 	if err := Run(context.Background(), []string{"--preview", "--", "rg"}, nil, &o, &e, "x"); err != nil {
@@ -552,12 +553,14 @@ func TestTLDROnlyCommandsHiddenByDefault(t *testing.T) {
 	h := setup(t)
 	t.Setenv("TEALDEER_CACHE_DIR", filepath.Join(h, "tealdeer"))
 	mustFile(t, filepath.Join(h, "tealdeer", "pages", "common", "notinstalled.md"), "# notinstalled\n\n> Example.\n", 0600)
+	mustFile(t, filepath.Join(h, "tealdeer", "pages", "common", "systool.md"), "# systool\n\n> Example.\n", 0600)
+	mustFile(t, filepath.Join(h, "bin", "systool"), "#!/bin/sh\n", 0700)
 	var o, e bytes.Buffer
 	if err := Run(context.Background(), []string{"list"}, nil, &o, &e, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(o.String(), "notinstalled") {
-		t.Fatalf("default list shows uninstalled tldr page: %q", o.String())
+	if strings.Contains(o.String(), "notinstalled") || !strings.Contains(o.String(), "command\tsystool\tavailable") {
+		t.Fatalf("default list wrong for tldr-only commands: %q", o.String())
 	}
 	o.Reset()
 	if err := Run(context.Background(), []string{"list", "--all"}, nil, &o, &e, "x"); err != nil {
@@ -565,5 +568,22 @@ func TestTLDROnlyCommandsHiddenByDefault(t *testing.T) {
 	}
 	if !strings.Contains(o.String(), "notinstalled") {
 		t.Fatalf("--all hides tldr page: %q", o.String())
+	}
+}
+
+func TestUninstalledLookupNeedsAll(t *testing.T) {
+	h := setup(t)
+	t.Setenv("TEALDEER_CACHE_DIR", filepath.Join(h, "tealdeer"))
+	mustFile(t, filepath.Join(h, "tealdeer", "pages", "common", "notinstalled.md"), "# notinstalled\n\n> Example page.\n", 0600)
+	var o, e bytes.Buffer
+	err := Run(context.Background(), []string{"notinstalled"}, nil, &o, &e, "x")
+	if err == nil || !strings.Contains(err.Error(), "wtf -a notinstalled") {
+		t.Fatalf("uninstalled lookup err %v out %q", err, o.String())
+	}
+	if err := Run(context.Background(), []string{"-a", "notinstalled"}, nil, &o, &e, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(o.String(), "Example page") {
+		t.Fatalf("-a lookup lacks tldr: %q", o.String())
 	}
 }
