@@ -27,9 +27,15 @@ optional `pager` root key configures the plain renderer's pager. `mdcat`, when a
 pagination and follows its normal `MDCAT_PAGER`/`PAGER` behavior.
 
 Markdown annotation and topic files use YAML-like scalar frontmatter with `schema`, `id`, `kind`,
-`summary`, and optional `title`, followed by Markdown. Schema 1 accepts `command` and `topic` kinds.
-Source files can also contain `# @tool`, `# @func`, `# @alias`, and `# @detail` comments. Later
-configured sources overlay only fields they supply; a later nonempty body replaces an earlier body.
+`summary`, and optional `title` and `parent`, followed by Markdown. Schema 1 accepts `command`,
+`group` and `topic` kinds. A `group` names a set of commands that is not itself runnable, such
+as language servers. `parent` places a command under another entry (a plugin under its host
+command, or a command under a group); `wtf <parent>` lists its members and `wtf <command>` shows
+what it is part of. Commands from one installed package are linked the same way automatically:
+extras sit under the package's main command, or under a group named after the package when no
+command has its name. Source files can also contain `# @tool`, `# @func`, `# @alias`, `# @group`,
+and `# @detail` comments. Later configured sources overlay only fields they supply; a later
+nonempty body replaces an earlier body.
 
 Topic writes invoke `post_write` directly as an argument vector after a changed, valid save.
 `{path}` is substituted in each argument. No shell evaluates the hook.

@@ -73,7 +73,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	} else {
 		rt.records = merged
 	}
-	rt.records = enrichAnnotatedSystemPackages(ctx, rt.records)
+	rt.records = linkPackages(enrichAnnotatedSystemPackages(ctx, rt.records))
 	if len(args) > 0 && args[0] == "list" {
 		return rt.list(args[1:])
 	}
@@ -132,7 +132,7 @@ func (r *runtime) list(args []string) error {
 	}
 	visible := make([]Record, 0, len(r.records))
 	for _, x := range r.records {
-		if x.Available || x.Kind == "topic" || x.HasTLDR || includeUnavailable {
+		if visibleByDefault(x) || includeUnavailable {
 			visible = append(visible, x)
 		}
 	}
@@ -144,20 +144,18 @@ func (r *runtime) list(args []string) error {
 		fmt.Fprintln(r.stdout, string(b))
 		return nil
 	}
-	tty := isTerminalWriter(r.stdout)
-	if tty {
-		fmt.Fprintln(r.stdout, "KIND       COMMAND              STATUS       SUMMARY")
+	if isTerminalWriter(r.stdout) {
+		writeListTable(r.stdout, visible, outputWidth(r.stdout), os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb")
+		return nil
 	}
 	for _, x := range visible {
 		status := "unavailable"
 		if x.Available {
 			status = "available"
+		} else if shellDefinition(x) {
+			status = "shell"
 		}
-		if tty {
-			fmt.Fprintf(r.stdout, "%-10s %-20s %-12s %s\n", x.Kind, x.ID, status, x.Summary)
-		} else {
-			fmt.Fprintf(r.stdout, "%s\t%s\t%s\t%s\n", x.Kind, x.ID, status, sanitizeTSV(x.Summary))
-		}
+		fmt.Fprintf(r.stdout, "%s\t%s\t%s\t%s\n", x.Kind, x.ID, status, sanitizeTSV(x.Summary))
 	}
 	return nil
 }
@@ -214,7 +212,7 @@ func (r *runtime) lookup(ctx context.Context, args []string) error {
 		}
 		visible := make([]Record, 0, len(r.records))
 		for _, x := range r.records {
-			if x.Available || x.Kind == "topic" || x.HasTLDR {
+			if visibleByDefault(x) {
 				visible = append(visible, x)
 			}
 		}
@@ -381,48 +379,81 @@ func (r *runtime) display(ctx context.Context, x Record, local bool) error {
 	return render(ctx, r.stdout, r.stderr, doc, r.cfg.Pager)
 }
 
+// picker shows top-level rows (members folded into their group or parent). Choosing
+// a row with members opens a second picker of those members; Esc there returns to the
+// first picker.
 func (r *runtime) picker(ctx context.Context, records []Record, query string) error {
+	for {
+		id, err := r.choose(ctx, listRows(records), query, "enter: docs or open group   ·   esc: quit")
+		if err != nil || id == "" {
+			return err
+		}
+		selected, ok := recordByID(records, id)
+		if !ok {
+			return nil
+		}
+		if len(selected.Members) == 0 {
+			return r.display(ctx, selected, false)
+		}
+		var rows []listRow
+		if selected.Kind != "group" {
+			rows = append(rows, listRow{selected.Kind, selected.ID, selected.Summary})
+		}
+		for _, m := range selected.Members {
+			if x, ok := recordByID(r.records, m); ok {
+				rows = append(rows, listRow{x.Kind, x.ID, x.Summary})
+			}
+		}
+		member, err := r.choose(ctx, rows, "", selected.ID+" ▸ enter: docs   ·   esc: back")
+		if err != nil {
+			return err
+		}
+		if member == "" {
+			query = ""
+			continue
+		}
+		if x, ok := recordByID(r.records, member); ok {
+			return r.display(ctx, x, false)
+		}
+		return nil
+	}
+}
+
+// choose runs fzf over rows and returns the selected id, or "" when cancelled.
+func (r *runtime) choose(ctx context.Context, rows []listRow, query, header string) (string, error) {
 	fzf, e := exec.LookPath("fzf")
 	if e != nil {
-		return errors.New("fzf is required for interactive selection; use `wtf list` or install fzf")
+		return "", errors.New("fzf is required for interactive selection; use `wtf list` or install fzf")
 	}
 	exe, e := os.Executable()
 	if e != nil {
-		return e
+		return "", e
 	}
 	preview := shellQuote(exe) + " --local-only -- {1}"
-	args := []string{"--delimiter=\t", "--with-nth=2", "--layout=reverse", "--wrap", "--prompt=wtf ▸ ", "--header=enter: docs   ·   esc: quit", "--preview", preview, "--preview-window=right,55%,wrap,border-left"}
+	args := []string{"--delimiter=\t", "--with-nth=2", "--layout=reverse", "--tiebreak=index", "--wrap", "--prompt=wtf ▸ ", "--header=" + header, "--preview", preview, "--preview-window=right,55%,wrap,border-left"}
 	if query != "" {
 		args = append(args, "--query", query)
 	}
 	cmd := exec.CommandContext(ctx, fzf, args...)
 	var in strings.Builder
-	for _, x := range records {
-		if !safeCommandID(x.ID) {
+	for _, x := range rows {
+		if !safeCommandID(x.name) {
 			continue
 		}
-		fmt.Fprintf(&in, "%s\t%-10s %-20s %s\n", x.ID, sanitizeDisplay(x.Kind), sanitizeDisplay(x.ID), sanitizeDisplay(x.Summary))
+		fmt.Fprintf(&in, "%s\t%-8s %-24s %s\n", x.name, sanitizeDisplay(x.kind), sanitizeDisplay(x.name), sanitizeDisplay(sanitizeTSV(x.summary)))
 	}
 	cmd.Stdin = strings.NewReader(in.String())
 	cmd.Stderr = r.stderr
 	var out bytesBuffer
 	cmd.Stdout = &out
-	e = cmd.Run()
-	if e != nil {
+	if e = cmd.Run(); e != nil {
 		if ee := new(exec.ExitError); errors.As(e, &ee) && (ee.ExitCode() == 1 || ee.ExitCode() == 130) {
-			return nil
+			return "", nil
 		}
-		return fmt.Errorf("fzf: %w", e)
+		return "", fmt.Errorf("fzf: %w", e)
 	}
-	line := strings.TrimSpace(out.String())
-	id, _, _ := strings.Cut(line, "\t")
-	if id == "" {
-		return nil
-	}
-	if selected, ok := recordByID(records, id); ok {
-		return r.display(ctx, selected, false)
-	}
-	return nil
+	id, _, _ := strings.Cut(strings.TrimSpace(out.String()), "\t")
+	return id, nil
 }
 
 type bytesBuffer struct{ b strings.Builder }

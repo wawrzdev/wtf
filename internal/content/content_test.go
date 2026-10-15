@@ -79,3 +79,30 @@ func write(t *testing.T, p, s string) {
 		t.Fatal(e)
 	}
 }
+
+func TestInlineSummaryDropsPackageTags(t *testing.T) {
+	d := t.TempDir()
+	a := d + "/tags"
+	write(t, a, "# @tool rg — faster grep (ripgrep) @brew ripgrep\n# @tool lsp — language servers @brew pyright gopls\n")
+	got, _, errs := Load([]string{a}, nil)
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	if got["rg"].Summary != "faster grep (ripgrep)" || got["lsp"].Summary != "language servers" {
+		t.Fatalf("%q %q", got["rg"].Summary, got["lsp"].Summary)
+	}
+}
+
+func TestParentFieldAndGroupKind(t *testing.T) {
+	d := t.TempDir()
+	write(t, d+"/compose.md", "---\nschema: 1\nid: docker-compose\nkind: command\nparent: docker\nsummary: Compose plugin\n---\n")
+	write(t, d+"/inline", "# @group lsp — language servers\n")
+	write(t, d+"/self.md", "---\nschema: 1\nid: loop\nkind: command\nparent: loop\nsummary: x\n---\n")
+	got, _, errs := Load([]string{d}, nil)
+	if got["docker-compose"].Parent != "docker" || got["lsp"].Kind != "group" {
+		t.Fatalf("%+v %+v", got["docker-compose"], got["lsp"])
+	}
+	if _, ok := got["loop"]; ok || len(errs) != 1 {
+		t.Fatalf("self-parent accepted: %v", errs)
+	}
+}

@@ -21,6 +21,7 @@ type Entry struct {
 	Kind    string   `json:"kind"`
 	Title   string   `json:"title,omitempty"`
 	Summary string   `json:"summary,omitempty"`
+	Parent  string   `json:"parent,omitempty"`
 	Body    string   `json:"body,omitempty"`
 	Sources []Source `json:"sources"`
 	fields  map[string]bool
@@ -164,6 +165,8 @@ func parseMarkdown(path, s string) (Entry, error) {
 			x.Title = v
 		case "summary":
 			x.Summary = v
+		case "parent":
+			x.Parent = v
 		default:
 			return x, fmt.Errorf("%s:%d: unknown frontmatter field %q", path, i+1, k)
 		}
@@ -182,7 +185,7 @@ func Validate(x Entry) error {
 	if !validID(x.ID) {
 		return fmt.Errorf("invalid id %q", x.ID)
 	}
-	if x.Kind != "command" && x.Kind != "topic" && x.Kind != "tool" && x.Kind != "func" && x.Kind != "alias" {
+	if x.Kind != "command" && x.Kind != "topic" && x.Kind != "group" && x.Kind != "tool" && x.Kind != "func" && x.Kind != "alias" {
 		return fmt.Errorf("invalid kind %q", x.Kind)
 	}
 	return nil
@@ -194,8 +197,11 @@ func validatePartial(x Entry) error {
 	if !validID(x.ID) {
 		return fmt.Errorf("invalid id %q", x.ID)
 	}
-	if x.Kind != "" && x.Kind != "command" && x.Kind != "topic" {
+	if x.Kind != "" && x.Kind != "command" && x.Kind != "topic" && x.Kind != "group" {
 		return fmt.Errorf("invalid kind %q", x.Kind)
+	}
+	if x.Parent != "" && (!validID(x.Parent) || x.Parent == x.ID) {
+		return fmt.Errorf("invalid parent %q", x.Parent)
 	}
 	return nil
 }
@@ -245,14 +251,14 @@ func parseInline(path, s string) []Entry {
 			}
 			continue
 		}
-		if kind != "tool" && kind != "func" && kind != "alias" {
+		if kind != "tool" && kind != "func" && kind != "alias" && kind != "group" {
 			continue
 		}
 		idSummary := strings.SplitN(rest, " — ", 2)
 		id := strings.TrimSpace(strings.Fields(idSummary[0])[0])
 		summary := ""
 		if len(idSummary) == 2 {
-			summary = strings.TrimSpace(idSummary[1])
+			summary = stripPackageTags(idSummary[1])
 		}
 		if validID(id) {
 			fields := map[string]bool{"schema": true, "id": true, "kind": true}
@@ -263,6 +269,19 @@ func parseInline(path, s string) []Entry {
 		}
 	}
 	return out
+}
+
+// stripPackageTags removes trailing "@brew <package>" markers that older inline tags
+// use to name their package; the inventory supplies package details instead.
+func stripPackageTags(summary string) string {
+	fields := strings.Fields(summary)
+	for i := 0; i < len(fields); i++ {
+		if fields[i] == "@brew" {
+			fields = fields[:i]
+			break
+		}
+	}
+	return strings.Join(fields, " ")
 }
 
 func overlay(dst map[string]Entry, next Entry) {
@@ -282,6 +301,9 @@ func overlay(dst map[string]Entry, next Entry) {
 	}
 	if next.fields["summary"] {
 		cur.Summary = next.Summary
+	}
+	if next.fields["parent"] {
+		cur.Parent = next.Parent
 	}
 	if next.Body != "" {
 		cur.Body = next.Body

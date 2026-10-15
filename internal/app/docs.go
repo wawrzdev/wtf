@@ -30,7 +30,16 @@ type docOptions struct {
 func compose(ctx context.Context, r Record, opt docOptions) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n\n", r.ID)
-	fmt.Fprintf(&b, "## Identity\n\n- Kind: %s\n- Availability: %s\n", r.Kind, map[bool]string{true: "available", false: "unavailable"}[r.Available])
+	fmt.Fprintf(&b, "## Identity\n\n- Kind: %s\n", r.Kind)
+	if r.Kind != "topic" && r.Kind != "group" {
+		fmt.Fprintf(&b, "- Availability: %s\n", map[bool]string{true: "available", false: "unavailable"}[r.Available])
+	}
+	if r.Parent != "" {
+		fmt.Fprintf(&b, "- Part of: `%s`\n", r.Parent)
+	}
+	if len(r.Members) > 0 {
+		fmt.Fprintf(&b, "- Includes: `%s`\n", strings.Join(r.Members, "`, `"))
+	}
 	if r.Path != "" {
 		fmt.Fprintf(&b, "- Path: `%s`\n", r.Path)
 	}
@@ -62,7 +71,7 @@ func compose(ctx context.Context, r Record, opt docOptions) string {
 			fmt.Fprint(&b, " (complex expansion; target providers omitted)")
 		}
 		fmt.Fprintln(&b)
-	} else {
+	} else if r.Kind != "topic" && r.Kind != "group" {
 		fmt.Fprintln(&b, "- Live shell resolution: unavailable (run `eval \"$(wtf init zsh)\"`)")
 	}
 	if a := r.Annotation; a != nil {
@@ -91,13 +100,13 @@ func compose(ctx context.Context, r Record, opt docOptions) string {
 	if tldrErr != nil {
 		fmt.Fprintf(&b, "\n## tldr (local)\n\nUnavailable: %v\n", tldrErr)
 	}
-	if !opt.LocalOnly && r.Available && r.Kind != "topic" && !(r.Shell != nil && (r.Shell.Kind == "function" || r.Shell.Complex || r.Shell.Cycle)) {
+	if !opt.LocalOnly && r.Available && r.Kind != "topic" && r.Kind != "group" && !(r.Shell != nil && (r.Shell.Kind == "function" || r.Shell.Complex || r.Shell.Cycle)) {
 		if h, label := nativeHelp(ctx, r.Path, name); h != "" {
 			fmt.Fprintf(&b, "\n## %s\n\n```text\n%s\n```\n", label, trimOutput(h, 24000))
 		}
 	}
 	eligible := tldr != "" || hasPublicPackage(r.Packages)
-	commandRecord := r.Kind != "topic" && r.Kind != "alias" && r.Kind != "func" && r.Kind != "function"
+	commandRecord := r.Kind != "topic" && r.Kind != "group" && r.Kind != "alias" && r.Kind != "func" && r.Kind != "function"
 	if !opt.LocalOnly && opt.CheatEnabled && commandRecord && eligible && (r.Shell == nil || (r.Shell.Kind != "alias" && r.Shell.Kind != "function")) {
 		text, stale, note := cheat(ctx, name, opt.CacheDir)
 		if text != "" {

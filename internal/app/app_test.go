@@ -42,6 +42,30 @@ func TestStableListAndQuery(t *testing.T) {
 		}
 	}
 }
+func TestListSortsByKindThenName(t *testing.T) {
+	h := setup(t)
+	for _, id := range []string{"zz", "aa", "mk", "gg"} {
+		mustFile(t, filepath.Join(h, "bin", id), "#!/bin/sh\n", 0700)
+	}
+	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "inline"), "# @tool zz — z tool\n# @tool aa — a tool\n# @func mk — make\n# @alias ll — long list\n# @alias gg — go\n", 0600)
+	mustFile(t, filepath.Join(h, "data", "wtf", "topics", "basics.md"), "---\nschema: 1\nid: basics\nkind: topic\nsummary: Basics\n---\n\n# Basics\n", 0600)
+	var o, e bytes.Buffer
+	if err := Run(context.Background(), []string{"list"}, nil, &o, &e, "x"); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, line := range strings.Split(strings.TrimSpace(o.String()), "\n") {
+		f := strings.Split(line, "\t")
+		got = append(got, f[0]+":"+f[1])
+	}
+	want := "alias:gg alias:ll func:mk command:aa command:zz topic:basics"
+	if !strings.Contains(o.String(), "alias\tll\tshell\t") {
+		t.Fatalf("shell-only alias not listed as shell: %q", o.String())
+	}
+	if strings.Join(got, " ") != want {
+		t.Fatalf("order %q, want %q (stderr %q)", strings.Join(got, " "), want, e.String())
+	}
+}
 func TestUnavailableAllAndJSON(t *testing.T) {
 	h := setup(t)
 	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "gone.md"), "---\nschema: 1\nid: gone\nkind: command\nsummary: Missing\n---\n", 0600)
