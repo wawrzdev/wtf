@@ -282,7 +282,7 @@ func TestPickerUsesNativeKeysAndLocalPreview(t *testing.T) {
 		t.Fatal(e)
 	}
 	s := string(b)
-	if strings.Contains(s, "--bind") || !strings.Contains(s, "--local-only -- {1}") || !strings.Contains(s, "--with-nth=2") {
+	if strings.Contains(s, "--bind") || !strings.Contains(s, "--preview -- {1}") || !strings.Contains(s, "--with-nth=2") {
 		t.Fatalf("fzf args %q", s)
 	}
 	row, e := os.ReadFile(input)
