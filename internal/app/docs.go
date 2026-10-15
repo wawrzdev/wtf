@@ -213,6 +213,11 @@ func pipeDoc(ctx context.Context, path string, args []string, input string) (str
 	return string(b), e == nil
 }
 
+func hasLocalTLDR(name string) bool {
+	page, _ := localTLDR(name)
+	return page != ""
+}
+
 func localTLDR(name string) (string, error) {
 	if name == "" || strings.Contains(name, "/") {
 		return "", nil

@@ -12,10 +12,12 @@ opens a second picker of them, and Esc returns. Redirected output prints four ta
 fields per record, members included (`kind`, `id`, `availability`, `summary`); annotated
 aliases and functions report availability `shell`, because they live in the shell rather than
 on PATH. Records and the picker are ordered by kind (alias, func, command, group, topic), then
-id. By default lists, lookups and the picker cover installed commands, shell definitions,
-groups and topics; `-a`/`--all` (`wtf -a`, `wtf -a <name>`, `wtf list -a`) also includes
-annotated commands and local tldr pages for commands that are not installed. Looking up an
-uninstalled command without `-a` fails with a hint. Picker rows are cut to the window width. `--json` emits the same ordered array of
+id. Records come from annotations, topics and package-manager installs; local tldr pages add
+examples to those records but never add records of their own. By default lists, lookups and
+the picker cover installed commands, shell definitions, groups and topics, and `wtf <name>`
+also works for any other command on PATH. `-a`/`--all` (`wtf -a`, `wtf list -a`) includes
+annotated commands that are not installed, and `wtf -a <name>` reads a local tldr page for an
+uninstalled command. Looking up an uninstalled command without `-a` fails with a hint. Picker rows are cut to the window width. `--json` emits the same ordered array of
 records, with `parent` and `members` where set, whose field names are versioned by the CLI
 release.
 

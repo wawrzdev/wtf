@@ -111,8 +111,6 @@ func shellDefinition(x Record) bool {
 
 // visibleByDefault decides which records list and the picker show without --all.
 func visibleByDefault(x Record) bool {
-	// tldr pages for commands that are not installed stay reachable by name and with
-	// --all, but are not listed by default.
 	return x.Available || x.Kind == "topic" || x.Kind == "group" || shellDefinition(x)
 }
 
@@ -153,18 +151,13 @@ func mergeTLDR(records []Record) ([]Record, error) {
 	for i := range records {
 		seen[records[i].ID] = i
 	}
+	// tldr pages enrich records we already know (annotations, topics, package
+	// installs); they never add records, so the list stays what we manage.
 	ids, err := localTLDRIDs()
 	for _, id := range ids {
 		if i, ok := seen[id]; ok {
 			records[i].HasTLDR = true
-			continue
 		}
-		seen[id] = len(records)
-		x := Record{ID: id, Kind: "command", HasTLDR: true}
-		if paths := findAll(id); len(paths) > 0 {
-			x.Available, x.Path = true, paths[0]
-		}
-		records = append(records, x)
 	}
 	sortRecords(records)
 	return records, err

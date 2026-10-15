@@ -549,25 +549,32 @@ func TestPagerEnvDefaultsOnlyWithoutUserChoice(t *testing.T) {
 	}
 }
 
-func TestTLDROnlyCommandsHiddenByDefault(t *testing.T) {
+func TestTLDRPagesEnrichButNeverAddRecords(t *testing.T) {
 	h := setup(t)
 	t.Setenv("TEALDEER_CACHE_DIR", filepath.Join(h, "tealdeer"))
-	mustFile(t, filepath.Join(h, "tealdeer", "pages", "common", "notinstalled.md"), "# notinstalled\n\n> Example.\n", 0600)
-	mustFile(t, filepath.Join(h, "tealdeer", "pages", "common", "systool.md"), "# systool\n\n> Example.\n", 0600)
+	pages := filepath.Join(h, "tealdeer", "pages", "common")
+	mustFile(t, filepath.Join(pages, "notinstalled.md"), "# notinstalled\n\n> Example.\n", 0600)
+	mustFile(t, filepath.Join(pages, "systool.md"), "# systool\n\n> System tool page.\n", 0600)
+	mustFile(t, filepath.Join(pages, "rg.md"), "# rg\n\n> Search page.\n", 0600)
 	mustFile(t, filepath.Join(h, "bin", "systool"), "#!/bin/sh\n", 0700)
-	var o, e bytes.Buffer
-	if err := Run(context.Background(), []string{"list"}, nil, &o, &e, "x"); err != nil {
-		t.Fatal(err)
+	mustFile(t, filepath.Join(h, "bin", "rg"), "#!/bin/sh\n", 0700)
+	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "inline"), "# @tool rg — fast search\n", 0600)
+	for _, args := range [][]string{{"list"}, {"list", "--all"}} {
+		var o, e bytes.Buffer
+		if err := Run(context.Background(), args, nil, &o, &e, "x"); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(o.String(), "systool") || strings.Contains(o.String(), "notinstalled") || !strings.Contains(o.String(), "\trg\t") {
+			t.Fatalf("%v listed tldr-only pages or lost rg: %q", args, o.String())
+		}
 	}
-	if strings.Contains(o.String(), "notinstalled") || !strings.Contains(o.String(), "command\tsystool\tavailable") {
-		t.Fatalf("default list wrong for tldr-only commands: %q", o.String())
+	var o, e bytes.Buffer
+	if err := Run(context.Background(), []string{"rg"}, nil, &o, &e, "x"); err != nil || !strings.Contains(o.String(), "Search page") {
+		t.Fatalf("annotated command lacks tldr: %v %q", err, o.String())
 	}
 	o.Reset()
-	if err := Run(context.Background(), []string{"list", "--all"}, nil, &o, &e, "x"); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(o.String(), "notinstalled") {
-		t.Fatalf("--all hides tldr page: %q", o.String())
+	if err := Run(context.Background(), []string{"systool"}, nil, &o, &e, "x"); err != nil || !strings.Contains(o.String(), "System tool page") {
+		t.Fatalf("installed system command lookup: %v %q", err, o.String())
 	}
 }
 

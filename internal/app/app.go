@@ -233,7 +233,9 @@ func (r *runtime) lookup(ctx context.Context, args []string) error {
 	}
 	matches := matchRecords(pool, query)
 	if len(matches) == 0 && !r.all && shell == nil {
-		if hidden := matchRecords(r.records, query); len(hidden) > 0 && strings.EqualFold(hidden[0].ID, query) {
+		hidden := matchRecords(r.records, query)
+		_, pathErr := exec.LookPath(query)
+		if pathErr != nil && ((len(hidden) > 0 && strings.EqualFold(hidden[0].ID, query)) || hasLocalTLDR(query)) {
 			return fmt.Errorf("%s is not installed; use `wtf -a %s` to read about it anyway", query, query)
 		}
 	}
@@ -245,6 +247,9 @@ func (r *runtime) lookup(ctx context.Context, args []string) error {
 				x := Record{ID: query, Kind: "command", Available: true, Path: p}
 				x.Packages = inventory.ExactSystem(ctx, query, p)
 				return r.display(ctx, x, localOnly)
+			}
+			if r.all && safeCommandID(query) && hasLocalTLDR(query) {
+				return r.display(ctx, Record{ID: query, Kind: "command", HasTLDR: true}, localOnly)
 			}
 			return fmt.Errorf("no match for %q", query)
 		}
