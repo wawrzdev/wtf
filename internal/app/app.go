@@ -159,7 +159,7 @@ func (r *runtime) list(args []string) error {
 		} else if shellDefinition(x) {
 			status = "shell"
 		}
-		fmt.Fprintf(r.stdout, "%s\t%s\t%s\t%s\n", x.Kind, x.ID, status, sanitizeTSV(x.Summary))
+		fmt.Fprintf(r.stdout, "%s\t%s\t%s\t%s\n", x.Kind, x.ID, status, sanitizeTSV(labeledSummary(x)))
 	}
 	return nil
 }

@@ -35,6 +35,9 @@ func compose(ctx context.Context, r Record, opt docOptions) string {
 	if r.Kind != "topic" && r.Kind != "group" {
 		fmt.Fprintf(&b, "- Availability: %s\n", map[bool]string{true: "available", false: "unavailable"}[r.Available])
 	}
+	if label := originLabel(r); label != "" {
+		fmt.Fprintf(&b, "- Origin: %s\n", label)
+	}
 	if r.Parent != "" {
 		fmt.Fprintf(&b, "- Part of: `%s`\n", r.Parent)
 	}

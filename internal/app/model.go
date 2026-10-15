@@ -28,6 +28,7 @@ type Record struct {
 	Shell         *ShellResolution    `json:"shell,omitempty"`
 	HasTLDR       bool                `json:"has_tldr"`
 	System        bool                `json:"system,omitempty"`
+	Origin        string              `json:"origin,omitempty"`
 }
 type ShellResolution struct {
 	Kind      string     `json:"kind"`
@@ -308,7 +309,8 @@ func addSystemCommands(records []Record) []Record {
 				continue
 			}
 			known[name] = true
-			x := Record{ID: name, Kind: "command", Available: true, Path: path, System: true}
+			origin, packages := inventory.PathOwnership(name, path)
+			x := Record{ID: name, Kind: "command", Available: true, Path: path, Origin: origin, System: origin == "system", Packages: packages}
 			if page, ok := index[name]; ok {
 				x.HasTLDR = true
 				x.Summary = tldrDescription(page)

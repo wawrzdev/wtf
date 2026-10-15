@@ -39,7 +39,7 @@ func listRows(records []Record) []listRow {
 		if x.Parent != "" && listed[x.Parent] {
 			continue
 		}
-		summary := x.Summary
+		summary := labeledSummary(x)
 		if !x.Available && x.Kind == "command" {
 			summary = strings.TrimSpace(summary + " (not installed)")
 		}

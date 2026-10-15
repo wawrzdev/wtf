@@ -16,8 +16,14 @@ id. Records come from annotations, topics and package-manager installs; local tl
 examples to those records but never add records of their own. By default lists, lookups and
 the picker cover installed commands, shell definitions, groups and topics, and `wtf <name>`
 also works for any other command on PATH. `-a`/`--all` (`wtf -a`, `wtf list -a`) adds every
-other executable on PATH as a system command (`"system": true` in JSON), described by its local
-tldr page where one exists. Commands that are not installed are never listed; looking one up
+other executable on PATH, described by its local tldr page where one exists. Added rows carry
+an origin label in the list and picker: `dependency · homebrew/<formula>` for a dependency
+confirmed by its local Homebrew receipt, `package · homebrew/<formula>` for an explicitly
+installed formula missed by default discovery, `system` for macOS-owned executable directories,
+and `unknown` when ownership has not been established. Unknown does not mean unmanaged.
+Linux OS/package ownership is not inferred from `/usr/bin`. JSON exposes `origin` and any
+identified `packages`; `system: true` now means a verified system origin, rather than every
+extra PATH command. Dependencies remain exclusive to `--all` unless otherwise annotated. Commands that are not installed are never listed; looking one up
 reports that it is not installed. Picker rows are cut to the window width. `--json` emits the same ordered array of
 records, with `parent` and `members` where set, whose field names are versioned by the CLI
 release.

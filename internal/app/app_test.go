@@ -571,7 +571,7 @@ func TestTLDRPagesEnrichButNeverAddRecords(t *testing.T) {
 	if err := Run(context.Background(), []string{"list", "--all"}, nil, &l, &le, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(l.String(), "command\tsystool\tavailable\tSystem tool page.") || strings.Contains(l.String(), "notinstalled") {
+	if !strings.Contains(l.String(), "command\tsystool\tavailable\t[unknown] System tool page.") || strings.Contains(l.String(), "notinstalled") {
 		t.Fatalf("--all should add installed system commands only: %q", l.String())
 	}
 	var o, e bytes.Buffer
