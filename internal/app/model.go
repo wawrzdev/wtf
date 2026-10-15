@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"sort"
 	"strings"
 
@@ -26,6 +27,7 @@ type Record struct {
 	Topic         *content.Entry      `json:"topic,omitempty"`
 	Shell         *ShellResolution    `json:"shell,omitempty"`
 	HasTLDR       bool                `json:"has_tldr"`
+	System        bool                `json:"system,omitempty"`
 }
 type ShellResolution struct {
 	Kind      string     `json:"kind"`
@@ -284,4 +286,36 @@ func packageShortName(name string) string {
 		name = name[:i]
 	}
 	return name
+}
+
+// addSystemCommands adds every other executable on PATH as a system command, for
+// -a/--all. Descriptions come from local tldr pages where one exists.
+func addSystemCommands(records []Record) []Record {
+	known := map[string]bool{}
+	for _, x := range records {
+		known[x.ID] = true
+	}
+	index, _ := localTLDRIndex()
+	for _, dir := range strings.Split(envPath(), stringPathSep()) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			path := joinPath(dir, name)
+			if known[name] || !safeCommandID(name) || !executable(path) {
+				continue
+			}
+			known[name] = true
+			x := Record{ID: name, Kind: "command", Available: true, Path: path, System: true}
+			if page, ok := index[name]; ok {
+				x.HasTLDR = true
+				x.Summary = tldrDescription(page)
+			}
+			records = append(records, x)
+		}
+	}
+	sortRecords(records)
+	return records
 }

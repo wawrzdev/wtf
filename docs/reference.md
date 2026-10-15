@@ -15,9 +15,10 @@ on PATH. Records and the picker are ordered by kind (alias, func, command, group
 id. Records come from annotations, topics and package-manager installs; local tldr pages add
 examples to those records but never add records of their own. By default lists, lookups and
 the picker cover installed commands, shell definitions, groups and topics, and `wtf <name>`
-also works for any other command on PATH. `-a`/`--all` (`wtf -a`, `wtf list -a`) includes
-annotated commands that are not installed, and `wtf -a <name>` reads a local tldr page for an
-uninstalled command. Looking up an uninstalled command without `-a` fails with a hint. Picker rows are cut to the window width. `--json` emits the same ordered array of
+also works for any other command on PATH. `-a`/`--all` (`wtf -a`, `wtf list -a`) adds every
+other executable on PATH as a system command (`"system": true` in JSON), described by its local
+tldr page where one exists. Commands that are not installed are never listed; looking one up
+reports that it is not installed. Picker rows are cut to the window width. `--json` emits the same ordered array of
 records, with `parent` and `members` where set, whose field names are versioned by the CLI
 release.
 

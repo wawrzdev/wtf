@@ -69,21 +69,22 @@ func TestListSortsByKindThenName(t *testing.T) {
 		t.Fatalf("order %q, want %q (stderr %q)", strings.Join(got, " "), want, e.String())
 	}
 }
-func TestUnavailableAllAndJSON(t *testing.T) {
+func TestUninstalledAnnotationsAreNeverListed(t *testing.T) {
 	h := setup(t)
 	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "gone.md"), "---\nschema: 1\nid: gone\nkind: command\nsummary: Missing\n---\n", 0600)
+	for _, args := range [][]string{{"list"}, {"list", "-a", "--json"}} {
+		var o, e bytes.Buffer
+		if err := Run(context.Background(), args, nil, &o, &e, "x"); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(o.String(), "gone") {
+			t.Fatalf("%v included uninstalled annotation: %q", args, o.String())
+		}
+	}
 	var o, e bytes.Buffer
-	if err := Run(context.Background(), []string{"list"}, nil, &o, &e, "x"); err != nil {
-		t.Fatal(err)
-	}
-	if o.Len() != 0 {
-		t.Fatalf("default included unavailable: %q", o.String())
-	}
-	if err := Run(context.Background(), []string{"list", "-a", "--json"}, nil, &o, &e, "x"); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(o.String(), `"available": false`) {
-		t.Fatal(o.String())
+	err := Run(context.Background(), []string{"gone"}, nil, &o, &e, "x")
+	if err == nil || err.Error() != "gone is not installed" {
+		t.Fatalf("lookup err %v", err)
 	}
 }
 func TestExplicitPathAndShellComplex(t *testing.T) {
@@ -559,14 +560,19 @@ func TestTLDRPagesEnrichButNeverAddRecords(t *testing.T) {
 	mustFile(t, filepath.Join(h, "bin", "systool"), "#!/bin/sh\n", 0700)
 	mustFile(t, filepath.Join(h, "bin", "rg"), "#!/bin/sh\n", 0700)
 	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "inline"), "# @tool rg — fast search\n", 0600)
-	for _, args := range [][]string{{"list"}, {"list", "--all"}} {
-		var o, e bytes.Buffer
-		if err := Run(context.Background(), args, nil, &o, &e, "x"); err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(o.String(), "systool") || strings.Contains(o.String(), "notinstalled") || !strings.Contains(o.String(), "\trg\t") {
-			t.Fatalf("%v listed tldr-only pages or lost rg: %q", args, o.String())
-		}
+	var l, le bytes.Buffer
+	if err := Run(context.Background(), []string{"list"}, nil, &l, &le, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(l.String(), "systool") || strings.Contains(l.String(), "notinstalled") || !strings.Contains(l.String(), "\trg\t") {
+		t.Fatalf("default list: %q", l.String())
+	}
+	l.Reset()
+	if err := Run(context.Background(), []string{"list", "--all"}, nil, &l, &le, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(l.String(), "command\tsystool\tavailable\tSystem tool page.") || strings.Contains(l.String(), "notinstalled") {
+		t.Fatalf("--all should add installed system commands only: %q", l.String())
 	}
 	var o, e bytes.Buffer
 	if err := Run(context.Background(), []string{"rg"}, nil, &o, &e, "x"); err != nil || !strings.Contains(o.String(), "Search page") {
@@ -575,23 +581,6 @@ func TestTLDRPagesEnrichButNeverAddRecords(t *testing.T) {
 	o.Reset()
 	if err := Run(context.Background(), []string{"systool"}, nil, &o, &e, "x"); err != nil || !strings.Contains(o.String(), "System tool page") {
 		t.Fatalf("installed system command lookup: %v %q", err, o.String())
-	}
-}
-
-func TestUninstalledLookupNeedsAll(t *testing.T) {
-	h := setup(t)
-	t.Setenv("TEALDEER_CACHE_DIR", filepath.Join(h, "tealdeer"))
-	mustFile(t, filepath.Join(h, "tealdeer", "pages", "common", "notinstalled.md"), "# notinstalled\n\n> Example page.\n", 0600)
-	var o, e bytes.Buffer
-	err := Run(context.Background(), []string{"notinstalled"}, nil, &o, &e, "x")
-	if err == nil || !strings.Contains(err.Error(), "wtf -a notinstalled") {
-		t.Fatalf("uninstalled lookup err %v out %q", err, o.String())
-	}
-	if err := Run(context.Background(), []string{"-a", "notinstalled"}, nil, &o, &e, "x"); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(o.String(), "Example page") {
-		t.Fatalf("-a lookup lacks tldr: %q", o.String())
 	}
 }
 

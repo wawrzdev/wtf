@@ -76,6 +76,9 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		rt.records = merged
 	}
 	rt.records = linkPackages(enrichAnnotatedSystemPackages(ctx, rt.records))
+	if contains(args, "-a") || contains(args, "--all") {
+		rt.records = addSystemCommands(rt.records)
+	}
 	if len(args) > 0 && args[0] == "list" {
 		return rt.list(args[1:])
 	}
@@ -126,7 +129,6 @@ func writeCacheStatus(w io.Writer, statuses []inventory.Status) {
 
 func (r *runtime) list(args []string) error {
 	jsonOut := contains(args, "--json")
-	includeUnavailable := contains(args, "-a") || contains(args, "--all")
 	for _, a := range args {
 		if a != "--json" && a != "-a" && a != "--all" {
 			return fmt.Errorf("unknown list option %q", a)
@@ -134,7 +136,7 @@ func (r *runtime) list(args []string) error {
 	}
 	visible := make([]Record, 0, len(r.records))
 	for _, x := range r.records {
-		if visibleByDefault(x) || includeUnavailable {
+		if visibleByDefault(x) {
 			visible = append(visible, x)
 		}
 	}
@@ -235,8 +237,8 @@ func (r *runtime) lookup(ctx context.Context, args []string) error {
 	if len(matches) == 0 && !r.all && shell == nil {
 		hidden := matchRecords(r.records, query)
 		_, pathErr := exec.LookPath(query)
-		if pathErr != nil && ((len(hidden) > 0 && strings.EqualFold(hidden[0].ID, query)) || hasLocalTLDR(query)) {
-			return fmt.Errorf("%s is not installed; use `wtf -a %s` to read about it anyway", query, query)
+		if pathErr != nil && len(hidden) > 0 && strings.EqualFold(hidden[0].ID, query) {
+			return fmt.Errorf("%s is not installed", query)
 		}
 	}
 	if len(matches) == 0 {
@@ -247,9 +249,6 @@ func (r *runtime) lookup(ctx context.Context, args []string) error {
 				x := Record{ID: query, Kind: "command", Available: true, Path: p}
 				x.Packages = inventory.ExactSystem(ctx, query, p)
 				return r.display(ctx, x, localOnly)
-			}
-			if r.all && safeCommandID(query) && hasLocalTLDR(query) {
-				return r.display(ctx, Record{ID: query, Kind: "command", HasTLDR: true}, localOnly)
 			}
 			return fmt.Errorf("no match for %q", query)
 		}
@@ -439,11 +438,8 @@ func (r *runtime) picker(ctx context.Context, records []Record, query string) er
 }
 
 // candidates are the records lookups and the picker consider: installed commands,
-// shell definitions, groups and topics, or every record with -a/--all.
+// shell definitions, groups and topics (plus system commands with -a/--all).
 func (r *runtime) candidates() []Record {
-	if r.all {
-		return r.records
-	}
 	out := make([]Record, 0, len(r.records))
 	for _, x := range r.records {
 		if visibleByDefault(x) {
@@ -746,7 +742,7 @@ const usage = `wtf — discover installed commands and read composed documentati
 Usage:
   wtf                         Open the interactive picker
   wtf <query>                 Resolve a document or prefilter the picker
-  wtf -a|--all [<query>]      Include commands that are not installed (tldr pages)
+  wtf -a|--all [<query>]      Also include every other command on PATH
   wtf list [-a|--all] [--json]
   wtf topic new <title>
   wtf topic edit [query]
@@ -822,7 +818,7 @@ _wtf() {
       ;;
     arguments)
       case $words[2] in
-        list) _arguments '(-a --all)'{-a,--all}'[include unavailable annotations]' '--json[emit JSON]' ;;
+        list) _arguments '(-a --all)'{-a,--all}'[include system commands on PATH]' '--json[emit JSON]' ;;
         topic)
           if (( CURRENT == 3 )); then _values 'topic command' 'new[create topic]' 'edit[edit topic]'
           elif [[ $words[3] == edit ]]; then _values 'topic' ${(f)"$(command wtf list -a 2>/dev/null | awk -F '\t' '$1 == "topic" {print $2}')"}
@@ -873,7 +869,7 @@ complete -c wtf -n '__fish_use_subcommand' -a cache -d 'Inspect package cache'
 complete -c wtf -n '__fish_use_subcommand' -a init -d 'Emit shell integration'
 complete -c wtf -n '__fish_use_subcommand' -a completion -d 'Emit completions'
 complete -c wtf -n '__fish_use_subcommand' -a version -d 'Print version'
-complete -c wtf -n '__fish_seen_subcommand_from list' -s a -l all -d 'Include unavailable annotations'
+complete -c wtf -n '__fish_seen_subcommand_from list' -s a -l all -d 'Include system commands on PATH'
 complete -c wtf -n '__fish_seen_subcommand_from list' -l json -d 'Emit JSON'
 complete -c wtf -n '__fish_seen_subcommand_from topic; and not __fish_seen_subcommand_from new edit' -a 'new edit'
 complete -c wtf -n '__fish_seen_subcommand_from topic; and __fish_seen_subcommand_from edit' -a '(__wtf_topic_ids)'

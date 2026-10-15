@@ -169,6 +169,11 @@ func AllPackages(c Cache) []Package {
 }
 
 func run(ctx context.Context, name string, args ...string) (string, error) {
+	return runIn(ctx, "", name, args...)
+}
+
+// runIn runs a command in dir (the current directory when empty), returning stdout.
+func runIn(ctx context.Context, dir, name string, args ...string) (string, error) {
 	p, e := exec.LookPath(name)
 	if e != nil {
 		return "", nil
@@ -177,6 +182,7 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 	defer cancel()
 	cmd := exec.CommandContext(cctx, p, args...)
 	cmd.Stdin = nil
+	cmd.Dir = dir
 	cmd.Env = commandEnv()
 	b, e := cmd.Output()
 	if cctx.Err() != nil {
@@ -196,7 +202,12 @@ func commandEnv() []string {
 	return append(env, "PAGER=cat", "GIT_PAGER=cat", "NO_COLOR=1", "LC_ALL=C", "LANG=C")
 }
 func discoverBrew(ctx context.Context) ([]Package, error) {
-	out, e := run(ctx, "brew", "leaves")
+	// Formulae installed on request include ones other formulae also depend on
+	// (xz, zstd), which `brew leaves` would drop.
+	out, e := run(ctx, "brew", "list", "--formula", "--installed-on-request")
+	if e != nil || strings.TrimSpace(out) == "" {
+		out, e = run(ctx, "brew", "leaves")
+	}
 	if e != nil {
 		return nil, e
 	}
@@ -225,7 +236,49 @@ func discoverBrew(ctx context.Context) ([]Package, error) {
 			result = append(result, p)
 		}
 	}
-	return result, nil
+	return append(result, brewCaskCommands(ctx)...), nil
+}
+
+// brewCaskCommands reports casks whose commands Homebrew links into its bin
+// directory (firefox, vlc), grouped by cask token.
+func brewCaskCommands(ctx context.Context) []Package {
+	prefix, _ := run(ctx, "brew", "--prefix")
+	bin := filepath.Join(strings.TrimSpace(prefix), "bin")
+	if strings.TrimSpace(prefix) == "" {
+		return nil
+	}
+	entries, _ := os.ReadDir(bin)
+	byToken := map[string]*Package{}
+	var order []string
+	for _, entry := range entries {
+		target, err := os.Readlink(filepath.Join(bin, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var parts []string
+		if _, rest, ok := strings.Cut(filepath.ToSlash(target), "/Caskroom/"); ok {
+			parts = strings.Split(rest, "/")
+		} else if app, _, ok := strings.Cut(filepath.ToSlash(target), ".app/"); ok && strings.HasPrefix(app, "/Applications/") {
+			// Some casks link a command straight into their installed app bundle.
+			parts = []string{strings.ToLower(filepath.Base(app)), ""}
+		}
+		if len(parts) < 2 || parts[0] == "" {
+			continue
+		}
+		p := byToken[parts[0]]
+		if p == nil {
+			p = &Package{Provider: "homebrew", Name: parts[0], Version: parts[1]}
+			byToken[parts[0]] = p
+			order = append(order, parts[0])
+		}
+		p.Commands = append(p.Commands, entry.Name())
+	}
+	var out []Package
+	for _, token := range order {
+		sort.Strings(byToken[token].Commands)
+		out = append(out, *byToken[token])
+	}
+	return out
 }
 func discoverMise(ctx context.Context) ([]Package, error) {
 	out, e := run(ctx, "mise", "ls", "--installed")
@@ -241,13 +294,45 @@ func discoverMise(ctx context.Context) ([]Package, error) {
 		}
 		seen[f[0]] = true
 		name := strings.TrimPrefix(f[0], "mise:")
-		commands := miseCommands(name, f[1])
-		if len(commands) == 0 {
-			commands = []string{filepath.Base(name)}
+		r = append(r, Package{Provider: "mise", Name: name, Version: f[1], Commands: miseCommands(name, f[1])})
+	}
+	// Shims name every command mise exposes, including ones outside a tool's bin
+	// directory (rustup toolchains, pnpm aliases); mise reports the owning tool.
+	index := map[string]int{}
+	for i, p := range r {
+		index[p.Name] = i
+	}
+	shims, _ := os.ReadDir(filepath.Join(dataHome(), "mise", "shims"))
+	home, _ := os.UserHomeDir()
+	for _, shim := range shims {
+		tool, err := runIn(ctx, home, "mise", "which", shim.Name(), "--plugin")
+		if err != nil {
+			continue
 		}
-		r = append(r, Package{Provider: "mise", Name: name, Version: f[1], Commands: commands})
+		lines := strings.Fields(strings.TrimSpace(tool))
+		if len(lines) == 0 {
+			continue
+		}
+		if i, ok := index[strings.TrimPrefix(lines[len(lines)-1], "mise:")]; ok && !containsString(r[i].Commands, shim.Name()) {
+			r[i].Commands = append(r[i].Commands, shim.Name())
+		}
+	}
+	for i := range r {
+		if len(r[i].Commands) == 0 {
+			r[i].Commands = []string{filepath.Base(r[i].Name)}
+		}
+		sort.Strings(r[i].Commands)
 	}
 	return r, nil
+}
+
+func containsString(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 func miseCommands(name, version string) []string {
 	root := filepath.Join(dataHome(), "mise", "installs")
@@ -433,7 +518,7 @@ func brewRoots() []string {
 	if v := os.Getenv("HOMEBREW_CELLAR"); v != "" {
 		return []string{v}
 	}
-	return []string{"/opt/homebrew/Cellar", "/usr/local/Cellar"}
+	return []string{"/opt/homebrew/Cellar", "/usr/local/Cellar", "/opt/homebrew/Caskroom", "/usr/local/Caskroom"}
 }
 func executables(p string) []string {
 	var r []string

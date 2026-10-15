@@ -213,11 +213,6 @@ func pipeDoc(ctx context.Context, path string, args []string, input string) (str
 	return string(b), e == nil
 }
 
-func hasLocalTLDR(name string) bool {
-	page, _ := localTLDR(name)
-	return page != ""
-}
-
 func localTLDR(name string) (string, error) {
 	if name == "" || strings.Contains(name, "/") {
 		return "", nil
@@ -274,14 +269,24 @@ func localTLDRRoots(home string) []string {
 }
 
 func localTLDRIDs() ([]string, error) {
+	index, err := localTLDRIndex()
+	ids := make([]string, 0, len(index))
+	for id := range index {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, err
+}
+
+// localTLDRIndex maps each local tldr page id to its first-found file.
+func localTLDRIndex() (map[string]string, error) {
 	h, _ := os.UserHomeDir()
-	seen := map[string]bool{}
-	var ids []string
+	index := map[string]string{}
 	for _, root := range localTLDRRoots(h) {
 		if root == "" {
 			continue
 		}
-		err := filepath.WalkDir(root, func(_ string, d os.DirEntry, e error) error {
+		err := filepath.WalkDir(root, func(p string, d os.DirEntry, e error) error {
 			if e != nil {
 				return e
 			}
@@ -289,18 +294,30 @@ func localTLDRIDs() ([]string, error) {
 				return nil
 			}
 			id := strings.TrimSuffix(d.Name(), ".md")
-			if safeCommandID(id) && !seen[id] {
-				seen[id] = true
-				ids = append(ids, id)
+			if _, ok := index[id]; safeCommandID(id) && !ok {
+				index[id] = p
 			}
 			return nil
 		})
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return ids, err
+			return index, err
 		}
 	}
-	sort.Strings(ids)
-	return ids, nil
+	return index, nil
+}
+
+// tldrDescription returns the first "> " summary line of a tldr page.
+func tldrDescription(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, "> ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "> "))
+		}
+	}
+	return ""
 }
 
 func hasPublicPackage(packages []inventory.Package) bool {

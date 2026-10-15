@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,19 +22,32 @@ func TestProviderFixturesHomebrewMiseUV(t *testing.T) {
 	}
 	brewPrefix := filepath.Join(d, "brew", "ripgrep")
 	writeExec(t, filepath.Join(brewPrefix, "bin", "rg"), "#!/bin/sh\n")
-	writeExec(t, filepath.Join(bin, "brew"), "#!/bin/sh\ncase \"$1 $2 $3\" in\n  leaves*) echo ripgrep;;\n  '--prefix ripgrep'*) echo \"$BREW_FIXTURE\";;\n  'list --versions ripgrep') echo 'ripgrep 14.1.0';;\n  'info --json=v2 ripgrep') echo '{\"formulae\":[{\"tap\":\"homebrew/core\"}]}';;\nesac\n")
-	writeExec(t, filepath.Join(bin, "mise"), "#!/bin/sh\necho 'node 24.0.0'\n")
+	writeExec(t, filepath.Join(bin, "brew"), "#!/bin/sh\ncase \"$1 $2 $3\" in\n  'list --formula --installed-on-request') echo ripgrep;;\n  '--prefix  ') echo \"$BREW_ROOT\";;\n  '--prefix ripgrep'*) echo \"$BREW_FIXTURE\";;\n  'list --versions ripgrep') echo 'ripgrep 14.1.0';;\n  'info --json=v2 ripgrep') echo '{\"formulae\":[{\"tap\":\"homebrew/core\"}]}';;\nesac\n")
+	writeExec(t, filepath.Join(bin, "mise"), "#!/bin/sh\nif [ \"$1\" = which ]; then echo node; else echo 'node 24.0.0'; fi\n")
+	writeExec(t, filepath.Join(d, "data", "mise", "shims", "npx"), "#!/bin/sh\n")
+	brewRoot := filepath.Join(d, "homebrew")
+	writeExec(t, filepath.Join(brewRoot, "Caskroom", "firefox", "152.0", "firefox.wrapper.sh"), "#!/bin/sh\n")
+	if e := os.MkdirAll(filepath.Join(brewRoot, "bin"), 0700); e != nil {
+		t.Fatal(e)
+	}
+	if e := os.Symlink(filepath.Join(brewRoot, "Caskroom", "firefox", "152.0", "firefox.wrapper.sh"), filepath.Join(brewRoot, "bin", "firefox")); e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("BREW_ROOT", brewRoot)
 	writeExec(t, filepath.Join(bin, "uv"), "#!/bin/sh\nprintf 'black v25.1.0\\n- black\\n- blackd\\n'\n")
 	t.Setenv("PATH", bin)
 	t.Setenv("BREW_FIXTURE", brewPrefix)
 	t.Setenv("XDG_DATA_HOME", filepath.Join(d, "data"))
 	writeExec(t, filepath.Join(d, "data", "mise", "installs", "node", "24.0.0", "bin", "node"), "#!/bin/sh\n")
 	b, e := discoverBrew(context.Background())
-	if e != nil || len(b) != 1 || b[0].Version != "14.1.0" || b[0].Commands[0] != "rg" || !b[0].Public {
+	if e != nil || len(b) != 2 || b[0].Version != "14.1.0" || b[0].Commands[0] != "rg" || !b[0].Public {
 		t.Fatalf("brew %#v %v", b, e)
 	}
+	if b[1].Name != "firefox" || b[1].Version != "152.0" || strings.Join(b[1].Commands, ",") != "firefox" {
+		t.Fatalf("cask %#v", b[1])
+	}
 	m, e := discoverMise(context.Background())
-	if e != nil || len(m) != 1 || m[0].Commands[0] != "node" {
+	if e != nil || len(m) != 1 || strings.Join(m[0].Commands, ",") != "node,npx" {
 		t.Fatalf("mise %#v %v", m, e)
 	}
 	u, e := discoverUV(context.Background())

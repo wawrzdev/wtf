@@ -14,7 +14,7 @@ _wtf() {
       ;;
     arguments)
       case $words[2] in
-        list) _arguments '(-a --all)'{-a,--all}'[include unavailable annotations]' '--json[emit JSON]' ;;
+        list) _arguments '(-a --all)'{-a,--all}'[include system commands on PATH]' '--json[emit JSON]' ;;
         topic)
           if (( CURRENT == 3 )); then _values 'topic command' 'new[create topic]' 'edit[edit topic]'
           elif [[ $words[3] == edit ]]; then _values 'topic' ${(f)"$(command wtf list -a 2>/dev/null | awk -F '\t' '$1 == "topic" {print $2}')"}
