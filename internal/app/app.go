@@ -418,7 +418,7 @@ func (r *runtime) picker(ctx context.Context, records []Record, query string) er
 			rows = append(rows, listRow{selected.Kind, selected.ID, selected.Summary})
 		}
 		for _, m := range selected.Members {
-			if x, ok := recordByID(r.records, m); ok {
+			if x, ok := recordByID(r.records, m); ok && visibleByDefault(x) {
 				rows = append(rows, listRow{x.Kind, x.ID, x.Summary})
 			}
 		}

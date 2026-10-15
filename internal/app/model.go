@@ -232,7 +232,14 @@ func linkPackages(records []Record) []Record {
 		if len(group) < 2 {
 			continue
 		}
-		name := packageShortName(records[group[0]].Packages[0].Name)
+		// App-backed casks can be named from an app bundle ("visual studio code").
+		// Group IDs must also pass the picker/preview protocol's command-ID checks.
+		name := strings.Join(strings.Fields(packageShortName(records[group[0]].Packages[0].Name)), "-")
+		if !safeCommandID(name) {
+			// Keep individual commands visible rather than folding them under a
+			// parent that the picker cannot represent.
+			continue
+		}
 		if _, ok := index[name]; !ok {
 			g := Record{ID: name, Kind: "group", Available: true}
 			for _, i := range group {
