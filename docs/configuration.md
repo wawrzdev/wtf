@@ -24,7 +24,9 @@ fallbacks are `~/.config`, `~/.local/share`, and `~/.cache`, respectively. Defau
 topics therefore live below `~/.local/share/wtf`, while package and cheat caches live below
 `~/.cache/wtf`. The
 optional `pager` root key configures the plain renderer's pager. `mdcat`, when available, owns
-pagination and follows its normal `MDCAT_PAGER`/`PAGER` behavior.
+pagination and follows its normal `MDCAT_PAGER`/`PAGER` behavior. When neither variable (nor
+`pager`, for plain output) is set, wtf uses `less -FRX`, which pages only output longer than
+the screen.
 
 Markdown annotation and topic files use YAML-like scalar frontmatter with `schema`, `id`, `kind`,
 `summary`, and optional `title` and `parent`, followed by Markdown. Schema 1 accepts `command`,

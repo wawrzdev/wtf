@@ -535,3 +535,15 @@ func TestCheatRequestsTextAndRejectsWebPages(t *testing.T) {
 		t.Fatal("rejected response overwrote cache")
 	}
 }
+
+func TestPagerEnvDefaultsOnlyWithoutUserChoice(t *testing.T) {
+	got := pagerEnv([]string{"HOME=/h"})
+	if got[len(got)-1] != "MDCAT_PAGER=less -FRX" {
+		t.Fatalf("no default: %v", got)
+	}
+	for _, env := range [][]string{{"PAGER=most"}, {"MDCAT_PAGER=bat"}} {
+		if got := pagerEnv(env); len(got) != 1 {
+			t.Fatalf("overrode user pager: %v", got)
+		}
+	}
+}
