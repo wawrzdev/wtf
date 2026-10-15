@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"sort"
 	"strings"
 
@@ -15,6 +16,8 @@ type Record struct {
 	Kind          string              `json:"kind"`
 	Title         string              `json:"title,omitempty"`
 	Summary       string              `json:"summary,omitempty"`
+	Parent        string              `json:"parent,omitempty"`
+	Members       []string            `json:"members,omitempty"`
 	Available     bool                `json:"available"`
 	Path          string              `json:"path,omitempty"`
 	ShadowedPaths []string            `json:"shadowed_paths,omitempty"`
@@ -24,6 +27,8 @@ type Record struct {
 	Topic         *content.Entry      `json:"topic,omitempty"`
 	Shell         *ShellResolution    `json:"shell,omitempty"`
 	HasTLDR       bool                `json:"has_tldr"`
+	System        bool                `json:"system,omitempty"`
+	Origin        string              `json:"origin,omitempty"`
 }
 type ShellResolution struct {
 	Kind      string     `json:"kind"`
@@ -64,6 +69,7 @@ func buildRecords(anns, topics map[string]content.Entry, pkgs []inventory.Packag
 		copy := a
 		r.Annotation = &copy
 		r.Summary = a.Summary
+		r.Parent = a.Parent
 		if a.Kind != "tool" && a.Kind != "" {
 			r.Kind = a.Kind
 		}
@@ -92,12 +98,43 @@ func buildRecords(anns, topics map[string]content.Entry, pkgs []inventory.Packag
 				r.ShadowedPaths = paths[1:]
 			}
 		}
-		if r.Available || includeUnavailable || r.Kind == "topic" {
+		if r.Available || includeUnavailable || r.Kind == "topic" || r.Kind == "group" {
 			out = append(out, *r)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	sortRecords(out)
 	return out
+}
+
+// shellDefinition reports an annotated alias or function, which lives in the shell
+// rather than on PATH and so cannot be checked by the binary.
+func shellDefinition(x Record) bool {
+	return !x.Available && (x.Kind == "alias" || x.Kind == "func")
+}
+
+// visibleByDefault decides which records list and the picker show without --all.
+func visibleByDefault(x Record) bool {
+	return x.Available || x.Kind == "topic" || x.Kind == "group" || shellDefinition(x)
+}
+
+// kindOrder lists shell definitions first, then commands, groups of commands and topics.
+var kindOrder = map[string]int{"alias": 0, "func": 1, "command": 2, "group": 3, "topic": 4}
+
+func kindRank(kind string) int {
+	if n, ok := kindOrder[kind]; ok {
+		return n
+	}
+	return len(kindOrder)
+}
+
+// sortRecords orders records by kind, then ID, for both list output and the picker.
+func sortRecords(rs []Record) {
+	sort.SliceStable(rs, func(i, j int) bool {
+		if a, b := kindRank(rs[i].Kind), kindRank(rs[j].Kind); a != b {
+			return a < b
+		}
+		return rs[i].ID < rs[j].ID
+	})
 }
 
 func safeCommandID(id string) bool {
@@ -117,16 +154,15 @@ func mergeTLDR(records []Record) ([]Record, error) {
 	for i := range records {
 		seen[records[i].ID] = i
 	}
+	// tldr pages enrich records we already know (annotations, topics, package
+	// installs); they never add records, so the list stays what we manage.
 	ids, err := localTLDRIDs()
 	for _, id := range ids {
 		if i, ok := seen[id]; ok {
 			records[i].HasTLDR = true
-			continue
 		}
-		seen[id] = len(records)
-		records = append(records, Record{ID: id, Kind: "command", HasTLDR: true})
 	}
-	sort.Slice(records, func(i, j int) bool { return records[i].ID < records[j].ID })
+	sortRecords(records)
 	return records, err
 }
 
@@ -168,3 +204,127 @@ func findAll(name string) []string {
 }
 
 func marshalStable(v any) ([]byte, error) { return json.MarshalIndent(v, "", "  ") }
+
+// linkPackages makes a package that provides several commands browsable as a unit.
+// Each extra command gets the package's main command as its parent (node → npm). A
+// package with no command of its own name (libpq, awscli) becomes a group record that
+// its commands belong to. Declared annotation parents are kept. Members are then
+// derived from parents, documented members first.
+func linkPackages(records []Record) []Record {
+	index := map[string]int{}
+	for i, x := range records {
+		index[x.ID] = i
+	}
+	byPackage := map[string][]int{}
+	var order []string
+	for i, x := range records {
+		if x.Kind != "command" || len(x.Packages) == 0 {
+			continue
+		}
+		k := x.Packages[0].Provider + ":" + x.Packages[0].Name
+		if byPackage[k] == nil {
+			order = append(order, k)
+		}
+		byPackage[k] = append(byPackage[k], i)
+	}
+	for _, k := range order {
+		group := byPackage[k]
+		if len(group) < 2 {
+			continue
+		}
+		// App-backed casks can be named from an app bundle ("visual studio code").
+		// Group IDs must also pass the picker/preview protocol's command-ID checks.
+		name := strings.Join(strings.Fields(packageShortName(records[group[0]].Packages[0].Name)), "-")
+		if !safeCommandID(name) {
+			// Keep individual commands visible rather than folding them under a
+			// parent that the picker cannot represent.
+			continue
+		}
+		if _, ok := index[name]; !ok {
+			g := Record{ID: name, Kind: "group", Available: true}
+			for _, i := range group {
+				if records[i].Summary != "" && g.Summary == "" {
+					g.Summary = records[i].Summary
+				}
+			}
+			index[name] = len(records)
+			records = append(records, g)
+		}
+		for _, i := range group {
+			if records[i].ID != name && records[i].Parent == "" {
+				records[i].Parent = name
+			}
+		}
+	}
+	for i := range records {
+		records[i].Members = nil
+	}
+	for _, x := range records {
+		if p, ok := index[x.Parent]; ok && x.Parent != "" {
+			records[p].Members = append(records[p].Members, x.ID)
+		}
+	}
+	for i := range records {
+		m := records[i].Members
+		sort.SliceStable(m, func(a, b int) bool {
+			da, db := records[index[m[a]]].Summary != "", records[index[m[b]]].Summary != ""
+			if da != db {
+				return da
+			}
+			return m[a] < m[b]
+		})
+	}
+	// An undocumented parent (httpie, lima) borrows its first documented member's
+	// summary so its row still says what it is.
+	for i := range records {
+		if records[i].Summary == "" && len(records[i].Members) > 0 {
+			records[i].Summary = records[index[records[i].Members[0]]].Summary
+		}
+	}
+	sortRecords(records)
+	return records
+}
+
+// packageShortName drops tap prefixes and version suffixes: "wawrzdev/packages/wtf" → "wtf".
+func packageShortName(name string) string {
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	if i := strings.Index(name, "@"); i > 0 {
+		name = name[:i]
+	}
+	return name
+}
+
+// addSystemCommands adds every other executable on PATH as a system command, for
+// -a/--all. Descriptions come from local tldr pages where one exists.
+func addSystemCommands(records []Record) []Record {
+	known := map[string]bool{}
+	for _, x := range records {
+		known[x.ID] = true
+	}
+	index, _ := localTLDRIndex()
+	for _, dir := range strings.Split(envPath(), stringPathSep()) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			path := joinPath(dir, name)
+			if known[name] || !safeCommandID(name) || !executable(path) {
+				continue
+			}
+			known[name] = true
+			origin, packages := inventory.PathOwnership(name, path)
+			x := Record{ID: name, Kind: "command", Available: true, Path: path, Origin: origin, System: origin == "system", Packages: packages}
+			if page, ok := index[name]; ok {
+				x.HasTLDR = true
+				x.Summary = tldrDescription(page)
+			}
+			records = append(records, x)
+		}
+	}
+	sortRecords(records)
+	return records
+}

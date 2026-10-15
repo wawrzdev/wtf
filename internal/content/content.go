@@ -16,14 +16,17 @@ type Source struct {
 	Line int    `json:"line"`
 }
 type Entry struct {
-	Schema  int      `json:"schema"`
-	ID      string   `json:"id"`
-	Kind    string   `json:"kind"`
-	Title   string   `json:"title,omitempty"`
-	Summary string   `json:"summary,omitempty"`
-	Body    string   `json:"body,omitempty"`
-	Sources []Source `json:"sources"`
-	fields  map[string]bool
+	Schema  int    `json:"schema"`
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Title   string `json:"title,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	Parent  string `json:"parent,omitempty"`
+	Body    string `json:"body,omitempty"`
+	// Preformatted marks an inline `@detail` body: hand-aligned text, not Markdown.
+	Preformatted bool     `json:"preformatted,omitempty"`
+	Sources      []Source `json:"sources"`
+	fields       map[string]bool
 }
 
 func Load(annotationPaths, topicDirs []string) (map[string]Entry, map[string]Entry, []error) {
@@ -164,6 +167,8 @@ func parseMarkdown(path, s string) (Entry, error) {
 			x.Title = v
 		case "summary":
 			x.Summary = v
+		case "parent":
+			x.Parent = v
 		default:
 			return x, fmt.Errorf("%s:%d: unknown frontmatter field %q", path, i+1, k)
 		}
@@ -182,7 +187,7 @@ func Validate(x Entry) error {
 	if !validID(x.ID) {
 		return fmt.Errorf("invalid id %q", x.ID)
 	}
-	if x.Kind != "command" && x.Kind != "topic" && x.Kind != "tool" && x.Kind != "func" && x.Kind != "alias" {
+	if x.Kind != "command" && x.Kind != "topic" && x.Kind != "group" && x.Kind != "tool" && x.Kind != "func" && x.Kind != "alias" {
 		return fmt.Errorf("invalid kind %q", x.Kind)
 	}
 	return nil
@@ -194,8 +199,11 @@ func validatePartial(x Entry) error {
 	if !validID(x.ID) {
 		return fmt.Errorf("invalid id %q", x.ID)
 	}
-	if x.Kind != "" && x.Kind != "command" && x.Kind != "topic" {
+	if x.Kind != "" && x.Kind != "command" && x.Kind != "topic" && x.Kind != "group" {
 		return fmt.Errorf("invalid kind %q", x.Kind)
+	}
+	if x.Parent != "" && (!validID(x.Parent) || x.Parent == x.ID) {
+		return fmt.Errorf("invalid parent %q", x.Parent)
 	}
 	return nil
 }
@@ -236,23 +244,22 @@ func parseInline(path, s string) []Entry {
 				if !strings.HasPrefix(t, "#") {
 					break
 				}
-				t = strings.TrimSpace(strings.TrimPrefix(t, "#"))
-				body = append(body, t)
+				body = append(body, strings.TrimRight(strings.TrimPrefix(t, "#"), " \t"))
 				i = j
 			}
 			if validID(id) {
-				out = append(out, Entry{Schema: 1, ID: id, Body: strings.TrimSpace(strings.Join(body, "\n")), Sources: []Source{{path, i - len(body) + 1}}})
+				out = append(out, Entry{Schema: 1, ID: id, Body: strings.Trim(dedent(body), "\n"), Preformatted: true, Sources: []Source{{path, i - len(body) + 1}}})
 			}
 			continue
 		}
-		if kind != "tool" && kind != "func" && kind != "alias" {
+		if kind != "tool" && kind != "func" && kind != "alias" && kind != "group" {
 			continue
 		}
 		idSummary := strings.SplitN(rest, " — ", 2)
 		id := strings.TrimSpace(strings.Fields(idSummary[0])[0])
 		summary := ""
 		if len(idSummary) == 2 {
-			summary = strings.TrimSpace(idSummary[1])
+			summary = stripPackageTags(idSummary[1])
 		}
 		if validID(id) {
 			fields := map[string]bool{"schema": true, "id": true, "kind": true}
@@ -263,6 +270,42 @@ func parseInline(path, s string) []Entry {
 		}
 	}
 	return out
+}
+
+// dedent removes the indentation shared by all non-blank lines, keeping the
+// alignment of hand-formatted columns and continuation lines.
+func dedent(lines []string) string {
+	common := -1
+	for _, l := range lines {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		n := len(l) - len(strings.TrimLeft(l, " \t"))
+		if common < 0 || n < common {
+			common = n
+		}
+	}
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		if len(l) >= common && common > 0 {
+			l = l[common:]
+		}
+		out[i] = l
+	}
+	return strings.Join(out, "\n")
+}
+
+// stripPackageTags removes trailing "@brew <package>" markers that older inline tags
+// use to name their package; the inventory supplies package details instead.
+func stripPackageTags(summary string) string {
+	fields := strings.Fields(summary)
+	for i := 0; i < len(fields); i++ {
+		if fields[i] == "@brew" {
+			fields = fields[:i]
+			break
+		}
+	}
+	return strings.Join(fields, " ")
 }
 
 func overlay(dst map[string]Entry, next Entry) {
@@ -283,8 +326,12 @@ func overlay(dst map[string]Entry, next Entry) {
 	if next.fields["summary"] {
 		cur.Summary = next.Summary
 	}
+	if next.fields["parent"] {
+		cur.Parent = next.Parent
+	}
 	if next.Body != "" {
 		cur.Body = next.Body
+		cur.Preformatted = next.Preformatted
 	}
 	cur.Sources = append(cur.Sources, next.Sources...)
 	dst[next.ID] = cur

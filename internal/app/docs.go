@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -30,7 +31,19 @@ type docOptions struct {
 func compose(ctx context.Context, r Record, opt docOptions) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n\n", r.ID)
-	fmt.Fprintf(&b, "## Identity\n\n- Kind: %s\n- Availability: %s\n", r.Kind, map[bool]string{true: "available", false: "unavailable"}[r.Available])
+	fmt.Fprintf(&b, "## Identity\n\n- Kind: %s\n", r.Kind)
+	if r.Kind != "topic" && r.Kind != "group" {
+		fmt.Fprintf(&b, "- Availability: %s\n", map[bool]string{true: "available", false: "unavailable"}[r.Available])
+	}
+	if label := originLabel(r); label != "" {
+		fmt.Fprintf(&b, "- Origin: %s\n", label)
+	}
+	if r.Parent != "" {
+		fmt.Fprintf(&b, "- Part of: `%s`\n", r.Parent)
+	}
+	if len(r.Members) > 0 {
+		fmt.Fprintf(&b, "- Includes: `%s`\n", strings.Join(r.Members, "`, `"))
+	}
 	if r.Path != "" {
 		fmt.Fprintf(&b, "- Path: `%s`\n", r.Path)
 	}
@@ -62,7 +75,9 @@ func compose(ctx context.Context, r Record, opt docOptions) string {
 			fmt.Fprint(&b, " (complex expansion; target providers omitted)")
 		}
 		fmt.Fprintln(&b)
-	} else {
+	} else if (r.Kind == "alias" || r.Kind == "func") && !opt.LocalOnly {
+		// Only shell definitions depend on the wrapper; the picker preview runs the
+		// binary directly, so it never has shell details to show.
 		fmt.Fprintln(&b, "- Live shell resolution: unavailable (run `eval \"$(wtf init zsh)\"`)")
 	}
 	if a := r.Annotation; a != nil {
@@ -71,7 +86,9 @@ func compose(ctx context.Context, r Record, opt docOptions) string {
 			fmt.Fprintln(&b, a.Summary)
 			fmt.Fprintln(&b)
 		}
-		if a.Body != "" {
+		if a.Body != "" && a.Preformatted {
+			fmt.Fprintf(&b, "```text\n%s\n```\n", a.Body)
+		} else if a.Body != "" {
 			fmt.Fprintln(&b, a.Body)
 		}
 	}
@@ -91,13 +108,19 @@ func compose(ctx context.Context, r Record, opt docOptions) string {
 	if tldrErr != nil {
 		fmt.Fprintf(&b, "\n## tldr (local)\n\nUnavailable: %v\n", tldrErr)
 	}
-	if !opt.LocalOnly && r.Available && r.Kind != "topic" && !(r.Shell != nil && (r.Shell.Kind == "function" || r.Shell.Complex || r.Shell.Cycle)) {
+	if !opt.LocalOnly && r.Available && r.Kind != "topic" && r.Kind != "group" && !(r.Shell != nil && (r.Shell.Kind == "function" || r.Shell.Complex || r.Shell.Cycle)) {
 		if h, label := nativeHelp(ctx, r.Path, name); h != "" {
 			fmt.Fprintf(&b, "\n## %s\n\n```text\n%s\n```\n", label, trimOutput(h, 24000))
 		}
 	}
 	eligible := tldr != "" || hasPublicPackage(r.Packages)
-	commandRecord := r.Kind != "topic" && r.Kind != "alias" && r.Kind != "func" && r.Kind != "function"
+	commandRecord := r.Kind != "topic" && r.Kind != "group" && r.Kind != "alias" && r.Kind != "func" && r.Kind != "function"
+	if opt.LocalOnly && opt.CheatEnabled && commandRecord {
+		// Local-only views (the picker preview) show cheat.sh only from the cache.
+		if text := cachedCheat(name, opt.CacheDir); text != "" {
+			fmt.Fprintf(&b, "\n## cheat.sh (cached)\n\n```text\n%s\n```\n", strings.TrimSpace(text))
+		}
+	}
 	if !opt.LocalOnly && opt.CheatEnabled && commandRecord && eligible && (r.Shell == nil || (r.Shell.Kind != "alias" && r.Shell.Kind != "function")) {
 		text, stale, note := cheat(ctx, name, opt.CacheDir)
 		if text != "" {
@@ -105,7 +128,8 @@ func compose(ctx context.Context, r Record, opt docOptions) string {
 			if stale {
 				label += " (stale cache)"
 			}
-			fmt.Fprintf(&b, "\n## %s\n\n%s\n", label, text)
+			// Cheat sheets use "#" for comments; fence them so Markdown renderers keep them literal.
+			fmt.Fprintf(&b, "\n## %s\n\n```text\n%s\n```\n", label, strings.TrimSpace(text))
 		} else if note != "" {
 			fmt.Fprintf(&b, "\n## cheat.sh\n\n%s\n", note)
 		}
@@ -231,24 +255,41 @@ var errTLDRFound = errors.New("tldr page found")
 
 func localTLDRRoots(home string) []string {
 	roots := []string{filepath.Join(home, ".cache", "tealdeer"), filepath.Join(home, ".local", "share", "tldr")}
+	if goruntime.GOOS == "darwin" {
+		// tealdeer follows the macOS cache convention unless configured otherwise.
+		roots = append([]string{filepath.Join(home, "Library", "Caches", "tealdeer")}, roots...)
+	}
 	if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" {
 		roots = append([]string{filepath.Join(xdg, "tealdeer")}, roots...)
 	}
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
 		roots = append(roots, filepath.Join(xdg, "tldr"))
 	}
+	if dir := os.Getenv("TEALDEER_CACHE_DIR"); dir != "" {
+		roots = append([]string{dir}, roots...)
+	}
 	return roots
 }
 
 func localTLDRIDs() ([]string, error) {
+	index, err := localTLDRIndex()
+	ids := make([]string, 0, len(index))
+	for id := range index {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, err
+}
+
+// localTLDRIndex maps each local tldr page id to its first-found file.
+func localTLDRIndex() (map[string]string, error) {
 	h, _ := os.UserHomeDir()
-	seen := map[string]bool{}
-	var ids []string
+	index := map[string]string{}
 	for _, root := range localTLDRRoots(h) {
 		if root == "" {
 			continue
 		}
-		err := filepath.WalkDir(root, func(_ string, d os.DirEntry, e error) error {
+		err := filepath.WalkDir(root, func(p string, d os.DirEntry, e error) error {
 			if e != nil {
 				return e
 			}
@@ -256,18 +297,30 @@ func localTLDRIDs() ([]string, error) {
 				return nil
 			}
 			id := strings.TrimSuffix(d.Name(), ".md")
-			if safeCommandID(id) && !seen[id] {
-				seen[id] = true
-				ids = append(ids, id)
+			if _, ok := index[id]; safeCommandID(id) && !ok {
+				index[id] = p
 			}
 			return nil
 		})
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return ids, err
+			return index, err
 		}
 	}
-	sort.Strings(ids)
-	return ids, nil
+	return index, nil
+}
+
+// tldrDescription returns the first "> " summary line of a tldr page.
+func tldrDescription(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, "> ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "> "))
+		}
+	}
+	return ""
 }
 
 func hasPublicPackage(packages []inventory.Package) bool {
@@ -282,18 +335,43 @@ func hasPublicPackage(packages []inventory.Package) bool {
 var cheatBaseURL = "https://cheat.sh/"
 var cheatHTTPClient = &http.Client{Timeout: 4 * time.Second}
 
-func cheat(ctx context.Context, name, cacheDir string) (string, bool, string) {
+func cheatCachePath(name, cacheDir string) string {
 	key := sha256.Sum256([]byte(name))
-	path := filepath.Join(cacheDir, "cheat", hex.EncodeToString(key[:])+".txt")
-	if b, e := os.ReadFile(path); e == nil {
+	return filepath.Join(cacheDir, "cheat", hex.EncodeToString(key[:])+".txt")
+}
+
+// cachedCheat returns a previously fetched cheat.sh page without any network access.
+func cachedCheat(name, cacheDir string) string {
+	b, _ := os.ReadFile(cheatCachePath(name, cacheDir))
+	if looksLikeHTML(b) {
+		return ""
+	}
+	return string(b)
+}
+
+// looksLikeHTML reports a web page; cheat.sh serves one to clients it does not
+// recognize as a terminal, and such pages are never shown or cached.
+func looksLikeHTML(b []byte) bool {
+	head := bytes.ToLower(bytes.TrimSpace(b))
+	return bytes.HasPrefix(head, []byte("<html")) || bytes.HasPrefix(head, []byte("<!doctype"))
+}
+
+func cheat(ctx context.Context, name, cacheDir string) (string, bool, string) {
+	path := cheatCachePath(name, cacheDir)
+	if b, e := os.ReadFile(path); e == nil && !looksLikeHTML(b) {
 		if st, e := os.Stat(path); e == nil && time.Since(st.ModTime()) < 7*24*time.Hour {
 			return string(b), false, ""
 		}
 	}
 	old, _ := os.ReadFile(path)
+	if looksLikeHTML(old) {
+		old = nil
+	}
 	u := cheatBaseURL + url.PathEscape(name) + "?T"
 	req, e := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if e == nil {
+		// cheat.sh returns plain text only to user agents it recognizes as terminals.
+		req.Header.Set("User-Agent", "curl/8 (wtf)")
 		var resp *http.Response
 		resp, e = cheatHTTPClient.Do(req)
 		if e == nil {
@@ -301,7 +379,9 @@ func cheat(ctx context.Context, name, cacheDir string) (string, bool, string) {
 			if resp.StatusCode == 200 {
 				var b []byte
 				b, e = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-				if e == nil && len(bytes.TrimSpace(b)) > 0 {
+				if e == nil && looksLikeHTML(b) {
+					e = errors.New("cheat.sh returned a web page")
+				} else if e == nil && len(bytes.TrimSpace(b)) > 0 {
 					_ = os.MkdirAll(filepath.Dir(path), 0700)
 					_ = os.WriteFile(path, b, 0600)
 					return string(b), false, ""

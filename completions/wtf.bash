@@ -3,7 +3,7 @@ _wtf_complete() {
   cur=${COMP_WORDS[COMP_CWORD]}
   prev=${COMP_WORDS[COMP_CWORD-1]}
   if (( COMP_CWORD == 1 )); then
-    COMPREPLY=( $(compgen -W "list topic cache init completion version $(command wtf list -a 2>/dev/null | cut -f2)" -- "$cur") )
+    COMPREPLY=( $(compgen -W "list topic cache init completion version $(command wtf list 2>/dev/null | cut -f2)" -- "$cur") )
   elif [[ ${COMP_WORDS[1]} == list ]]; then
     COMPREPLY=( $(compgen -W '-a --all --json' -- "$cur") )
   elif [[ ${COMP_WORDS[1]} == topic && $COMP_CWORD == 2 ]]; then

@@ -10,11 +10,11 @@ _wtf() {
       _values 'command' \
         'list[list commands]' 'topic[author topics]' 'cache[inspect package cache]' \
         'init[emit shell integration]' 'completion[emit completions]' 'version[print version]' \
-        ${(f)"$(command wtf list -a 2>/dev/null | cut -f2)"}
+        ${(f)"$(command wtf list 2>/dev/null | cut -f2)"}
       ;;
     arguments)
       case $words[2] in
-        list) _arguments '(-a --all)'{-a,--all}'[include unavailable annotations]' '--json[emit JSON]' ;;
+        list) _arguments '(-a --all)'{-a,--all}'[include system commands on PATH]' '--json[emit JSON]' ;;
         topic)
           if (( CURRENT == 3 )); then _values 'topic command' 'new[create topic]' 'edit[edit topic]'
           elif [[ $words[3] == edit ]]; then _values 'topic' ${(f)"$(command wtf list -a 2>/dev/null | awk -F '\t' '$1 == "topic" {print $2}')"}
@@ -24,7 +24,7 @@ _wtf() {
           elif [[ $words[3] == status ]]; then _arguments '--json[emit JSON]'; fi ;;
         init) _values 'shell' zsh ;;
         completion) _values 'shell' zsh bash fish ;;
-        *) _values 'command' ${(f)"$(command wtf list -a 2>/dev/null | cut -f2)"} ;;
+        *) _values 'command' ${(f)"$(command wtf list 2>/dev/null | cut -f2)"} ;;
       esac
       ;;
   esac

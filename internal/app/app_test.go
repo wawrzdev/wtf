@@ -36,27 +36,55 @@ func TestStableListAndQuery(t *testing.T) {
 	if e := Run(context.Background(), []string{"rg"}, strings.NewReader(""), &out, &err, "test"); e != nil {
 		t.Fatal(e)
 	}
-	for _, want := range []string{"# rg", "Fast search", "# rg body", "Live shell resolution: unavailable"} {
+	for _, want := range []string{"# rg", "Fast search", "# rg body"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in %s", want, out.String())
 		}
 	}
+	if strings.Contains(out.String(), "Live shell resolution") {
+		t.Errorf("plain command shows shell hint: %s", out.String())
+	}
 }
-func TestUnavailableAllAndJSON(t *testing.T) {
+func TestListSortsByKindThenName(t *testing.T) {
 	h := setup(t)
-	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "gone.md"), "---\nschema: 1\nid: gone\nkind: command\nsummary: Missing\n---\n", 0600)
+	for _, id := range []string{"zz", "aa", "mk", "gg"} {
+		mustFile(t, filepath.Join(h, "bin", id), "#!/bin/sh\n", 0700)
+	}
+	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "inline"), "# @tool zz — z tool\n# @tool aa — a tool\n# @func mk — make\n# @alias ll — long list\n# @alias gg — go\n", 0600)
+	mustFile(t, filepath.Join(h, "data", "wtf", "topics", "basics.md"), "---\nschema: 1\nid: basics\nkind: topic\nsummary: Basics\n---\n\n# Basics\n", 0600)
 	var o, e bytes.Buffer
 	if err := Run(context.Background(), []string{"list"}, nil, &o, &e, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if o.Len() != 0 {
-		t.Fatalf("default included unavailable: %q", o.String())
+	var got []string
+	for _, line := range strings.Split(strings.TrimSpace(o.String()), "\n") {
+		f := strings.Split(line, "\t")
+		got = append(got, f[0]+":"+f[1])
 	}
-	if err := Run(context.Background(), []string{"list", "-a", "--json"}, nil, &o, &e, "x"); err != nil {
-		t.Fatal(err)
+	want := "alias:gg alias:ll func:mk command:aa command:zz topic:basics"
+	if !strings.Contains(o.String(), "alias\tll\tshell\t") {
+		t.Fatalf("shell-only alias not listed as shell: %q", o.String())
 	}
-	if !strings.Contains(o.String(), `"available": false`) {
-		t.Fatal(o.String())
+	if strings.Join(got, " ") != want {
+		t.Fatalf("order %q, want %q (stderr %q)", strings.Join(got, " "), want, e.String())
+	}
+}
+func TestUninstalledAnnotationsAreNeverListed(t *testing.T) {
+	h := setup(t)
+	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "gone.md"), "---\nschema: 1\nid: gone\nkind: command\nsummary: Missing\n---\n", 0600)
+	for _, args := range [][]string{{"list"}, {"list", "-a", "--json"}} {
+		var o, e bytes.Buffer
+		if err := Run(context.Background(), args, nil, &o, &e, "x"); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(o.String(), "gone") {
+			t.Fatalf("%v included uninstalled annotation: %q", args, o.String())
+		}
+	}
+	var o, e bytes.Buffer
+	err := Run(context.Background(), []string{"gone"}, nil, &o, &e, "x")
+	if err == nil || err.Error() != "gone is not installed" {
+		t.Fatalf("lookup err %v", err)
 	}
 }
 func TestExplicitPathAndShellComplex(t *testing.T) {
@@ -255,7 +283,7 @@ func TestPickerUsesNativeKeysAndLocalPreview(t *testing.T) {
 		t.Fatal(e)
 	}
 	s := string(b)
-	if strings.Contains(s, "--bind") || !strings.Contains(s, "--local-only -- {1}") || !strings.Contains(s, "--with-nth=2") {
+	if strings.Contains(s, "--bind") || !strings.Contains(s, "--preview -- {1}") || !strings.Contains(s, "--with-nth=2") {
 		t.Fatalf("fzf args %q", s)
 	}
 	row, e := os.ReadFile(input)
@@ -433,5 +461,138 @@ func mustFile(t *testing.T, p, s string, mode os.FileMode) {
 	}
 	if e := os.WriteFile(p, []byte(s), mode); e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestShellHintOnlyForShellDefinitionsOutsidePreview(t *testing.T) {
+	h := setup(t)
+	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "inline"), "# @alias ll — long list\n", 0600)
+	var o, e bytes.Buffer
+	if err := Run(context.Background(), []string{"ll"}, nil, &o, &e, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(o.String(), "Live shell resolution: unavailable") {
+		t.Fatalf("alias without wrapper lacks hint: %s", o.String())
+	}
+	o.Reset()
+	if err := Run(context.Background(), []string{"--local-only", "ll"}, nil, &o, &e, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(o.String(), "Live shell resolution") {
+		t.Fatalf("preview shows shell hint: %s", o.String())
+	}
+}
+
+func TestPreviewFallsBackToPlainTextWithoutMdcat(t *testing.T) {
+	h := setup(t)
+	mustFile(t, filepath.Join(h, "bin", "rg"), "#!/bin/sh\n", 0700)
+	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "rg.md"), "---\nschema: 1\nid: rg\nkind: command\nsummary: Fast search\n---\n\n# rg body\n", 0600)
+	var o, e bytes.Buffer
+	if err := Run(context.Background(), []string{"--preview", "--", "rg"}, nil, &o, &e, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(o.String(), "rg body") || strings.Contains(o.String(), "# rg body") {
+		t.Fatalf("preview not plain: %q", o.String())
+	}
+}
+
+func TestLocalViewUsesTealdeerCacheDirAndCachedCheat(t *testing.T) {
+	h := setup(t)
+	pages := filepath.Join(h, "tealdeer", "tldr-pages", "pages", "common")
+	mustFile(t, filepath.Join(pages, "rg.md"), "# rg\n\n> Search recursively.\n", 0600)
+	t.Setenv("TEALDEER_CACHE_DIR", filepath.Join(h, "tealdeer"))
+	mustFile(t, filepath.Join(h, "bin", "rg"), "#!/bin/sh\n", 0700)
+	mustFile(t, cheatCachePath("rg", filepath.Join(h, "cache", "wtf")), "rg cheat page\n", 0600)
+	mustFile(t, filepath.Join(h, "config", "wtf", "config.toml"), "[annotations]\npaths = []\n[providers.cheat]\nenabled = true\n", 0600)
+	var o, e bytes.Buffer
+	if err := Run(context.Background(), []string{"--local-only", "rg"}, nil, &o, &e, "x"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"## tldr (local)", "Search recursively", "## cheat.sh (cached)", "rg cheat page"} {
+		if !strings.Contains(o.String(), want) {
+			t.Fatalf("missing %q in %s", want, o.String())
+		}
+	}
+}
+
+func TestCheatRequestsTextAndRejectsWebPages(t *testing.T) {
+	old, oldClient := cheatBaseURL, cheatHTTPClient
+	defer func() { cheatBaseURL = old; cheatHTTPClient = oldClient }()
+	cheatBaseURL = "https://local.invalid/"
+	var agent string
+	cheatHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		agent = r.Header.Get("User-Agent")
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("<html><head>page</head></html>")), Header: make(http.Header)}, nil
+	})}
+	cache := t.TempDir()
+	mustFile(t, cheatCachePath("eza", cache), "<HTML>stale web page</HTML>", 0600)
+	text, _, note := cheat(context.Background(), "eza", cache)
+	if !strings.HasPrefix(agent, "curl/") || text != "" || !strings.Contains(note, "web page") {
+		t.Fatalf("agent %q text %q note %q", agent, text, note)
+	}
+	if cachedCheat("eza", cache) != "" {
+		t.Fatal("cached web page shown")
+	}
+	if b, _ := os.ReadFile(cheatCachePath("eza", cache)); !strings.Contains(string(b), "stale web page") {
+		t.Fatal("rejected response overwrote cache")
+	}
+}
+
+func TestPagerEnvDefaultsOnlyWithoutUserChoice(t *testing.T) {
+	got := pagerEnv([]string{"HOME=/h"})
+	if got[len(got)-1] != "MDCAT_PAGER=less -FRX" {
+		t.Fatalf("no default: %v", got)
+	}
+	for _, env := range [][]string{{"PAGER=most"}, {"MDCAT_PAGER=bat"}} {
+		if got := pagerEnv(env); len(got) != 1 {
+			t.Fatalf("overrode user pager: %v", got)
+		}
+	}
+}
+
+func TestTLDRPagesEnrichButNeverAddRecords(t *testing.T) {
+	h := setup(t)
+	t.Setenv("TEALDEER_CACHE_DIR", filepath.Join(h, "tealdeer"))
+	pages := filepath.Join(h, "tealdeer", "pages", "common")
+	mustFile(t, filepath.Join(pages, "notinstalled.md"), "# notinstalled\n\n> Example.\n", 0600)
+	mustFile(t, filepath.Join(pages, "systool.md"), "# systool\n\n> System tool page.\n", 0600)
+	mustFile(t, filepath.Join(pages, "rg.md"), "# rg\n\n> Search page.\n", 0600)
+	mustFile(t, filepath.Join(h, "bin", "systool"), "#!/bin/sh\n", 0700)
+	mustFile(t, filepath.Join(h, "bin", "rg"), "#!/bin/sh\n", 0700)
+	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "inline"), "# @tool rg — fast search\n", 0600)
+	var l, le bytes.Buffer
+	if err := Run(context.Background(), []string{"list"}, nil, &l, &le, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(l.String(), "systool") || strings.Contains(l.String(), "notinstalled") || !strings.Contains(l.String(), "\trg\t") {
+		t.Fatalf("default list: %q", l.String())
+	}
+	l.Reset()
+	if err := Run(context.Background(), []string{"list", "--all"}, nil, &l, &le, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(l.String(), "command\tsystool\tavailable\t[unknown] System tool page.") || strings.Contains(l.String(), "notinstalled") {
+		t.Fatalf("--all should add installed system commands only: %q", l.String())
+	}
+	var o, e bytes.Buffer
+	if err := Run(context.Background(), []string{"rg"}, nil, &o, &e, "x"); err != nil || !strings.Contains(o.String(), "Search page") {
+		t.Fatalf("annotated command lacks tldr: %v %q", err, o.String())
+	}
+	o.Reset()
+	if err := Run(context.Background(), []string{"systool"}, nil, &o, &e, "x"); err != nil || !strings.Contains(o.String(), "System tool page") {
+		t.Fatalf("installed system command lookup: %v %q", err, o.String())
+	}
+}
+
+func TestInlineDetailIsShownAsPreformattedText(t *testing.T) {
+	h := setup(t)
+	mustFile(t, filepath.Join(h, "bin", "fd"), "#!/bin/sh\n", 0700)
+	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "inline"), "# @tool fd — faster find\n# @detail fd\n#   fd foo        search for foo\n#   fd -e ts      all .ts files\n", 0600)
+	var o, e bytes.Buffer
+	if err := Run(context.Background(), []string{"fd"}, nil, &o, &e, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(o.String(), "```text\nfd foo        search for foo\nfd -e ts      all .ts files\n```") {
+		t.Fatalf("detail not fenced: %q", o.String())
 	}
 }

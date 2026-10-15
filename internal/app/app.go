@@ -26,6 +26,8 @@ type runtime struct {
 	stdin               io.Reader
 	stdout, stderr      io.Writer
 	version             string
+	preview             bool
+	all                 bool
 }
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, version string) error {
@@ -73,7 +75,10 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	} else {
 		rt.records = merged
 	}
-	rt.records = enrichAnnotatedSystemPackages(ctx, rt.records)
+	rt.records = linkPackages(enrichAnnotatedSystemPackages(ctx, rt.records))
+	if contains(args, "-a") || contains(args, "--all") {
+		rt.records = addSystemCommands(rt.records)
+	}
 	if len(args) > 0 && args[0] == "list" {
 		return rt.list(args[1:])
 	}
@@ -124,7 +129,6 @@ func writeCacheStatus(w io.Writer, statuses []inventory.Status) {
 
 func (r *runtime) list(args []string) error {
 	jsonOut := contains(args, "--json")
-	includeUnavailable := contains(args, "-a") || contains(args, "--all")
 	for _, a := range args {
 		if a != "--json" && a != "-a" && a != "--all" {
 			return fmt.Errorf("unknown list option %q", a)
@@ -132,7 +136,7 @@ func (r *runtime) list(args []string) error {
 	}
 	visible := make([]Record, 0, len(r.records))
 	for _, x := range r.records {
-		if x.Available || x.Kind == "topic" || x.HasTLDR || includeUnavailable {
+		if visibleByDefault(x) {
 			visible = append(visible, x)
 		}
 	}
@@ -144,20 +148,18 @@ func (r *runtime) list(args []string) error {
 		fmt.Fprintln(r.stdout, string(b))
 		return nil
 	}
-	tty := isTerminalWriter(r.stdout)
-	if tty {
-		fmt.Fprintln(r.stdout, "KIND       COMMAND              STATUS       SUMMARY")
+	if isTerminalWriter(r.stdout) {
+		writeListTable(r.stdout, visible, outputWidth(r.stdout), os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb")
+		return nil
 	}
 	for _, x := range visible {
 		status := "unavailable"
-		if x.Available {
+		if x.Available || x.Kind == "topic" || x.Kind == "group" {
 			status = "available"
+		} else if shellDefinition(x) {
+			status = "shell"
 		}
-		if tty {
-			fmt.Fprintf(r.stdout, "%-10s %-20s %-12s %s\n", x.Kind, x.ID, status, x.Summary)
-		} else {
-			fmt.Fprintf(r.stdout, "%s\t%s\t%s\t%s\n", x.Kind, x.ID, status, sanitizeTSV(x.Summary))
-		}
+		fmt.Fprintf(r.stdout, "%s\t%s\t%s\t%s\n", x.Kind, x.ID, status, sanitizeTSV(labeledSummary(x)))
 	}
 	return nil
 }
@@ -173,6 +175,12 @@ func (r *runtime) lookup(ctx context.Context, args []string) error {
 			i = len(args)
 		case "--local-only":
 			localOnly = true
+		case "-a", "--all":
+			r.all = true
+		case "--preview":
+			// Private picker protocol: local-only docs rendered for the fzf preview pane.
+			localOnly = true
+			r.preview = true
 		case "--shell-kind":
 			if i+3 >= len(args) {
 				return errors.New("invalid private shell protocol")
@@ -212,13 +220,7 @@ func (r *runtime) lookup(ctx context.Context, args []string) error {
 		if shell != nil {
 			return errors.New("missing query")
 		}
-		visible := make([]Record, 0, len(r.records))
-		for _, x := range r.records {
-			if x.Available || x.Kind == "topic" || x.HasTLDR {
-				visible = append(visible, x)
-			}
-		}
-		return r.picker(ctx, visible, "")
+		return r.picker(ctx, r.candidates(), "")
 	}
 	query := strings.Join(queryParts, " ")
 	if strings.Contains(query, "/") {
@@ -227,7 +229,18 @@ func (r *runtime) lookup(ctx context.Context, args []string) error {
 			return r.display(ctx, x, localOnly)
 		}
 	}
-	matches := matchRecords(r.records, query)
+	pool := r.candidates()
+	if shell != nil {
+		pool = r.records
+	}
+	matches := matchRecords(pool, query)
+	if len(matches) == 0 && !r.all && shell == nil {
+		hidden := matchRecords(r.records, query)
+		_, pathErr := exec.LookPath(query)
+		if pathErr != nil && len(hidden) > 0 && strings.EqualFold(hidden[0].ID, query) {
+			return fmt.Errorf("%s is not installed", query)
+		}
+	}
 	if len(matches) == 0 {
 		if shell != nil {
 			matches = []Record{{ID: query, Kind: shell.Kind, Available: true}}
@@ -378,51 +391,102 @@ func matchRecords(rs []Record, q string) []Record {
 }
 func (r *runtime) display(ctx context.Context, x Record, local bool) error {
 	doc := compose(ctx, x, docOptions{LocalOnly: local, CheatEnabled: r.cfg.Cheat.Enabled, CacheDir: r.cacheDir})
+	if r.preview {
+		return renderPreview(ctx, r.stdout, doc)
+	}
 	return render(ctx, r.stdout, r.stderr, doc, r.cfg.Pager)
 }
 
+// picker shows top-level rows (members folded into their group or parent). Choosing
+// a row with members opens a second picker of those members; Esc there returns to the
+// first picker.
 func (r *runtime) picker(ctx context.Context, records []Record, query string) error {
+	for {
+		id, err := r.choose(ctx, listRows(records), query, "enter: docs or open group   ·   esc: quit")
+		if err != nil || id == "" {
+			return err
+		}
+		selected, ok := recordByID(records, id)
+		if !ok {
+			return nil
+		}
+		if len(selected.Members) == 0 {
+			return r.display(ctx, selected, false)
+		}
+		var rows []listRow
+		if selected.Kind != "group" {
+			rows = append(rows, listRow{selected.Kind, selected.ID, selected.Summary})
+		}
+		for _, m := range selected.Members {
+			if x, ok := recordByID(r.records, m); ok && visibleByDefault(x) {
+				rows = append(rows, listRow{x.Kind, x.ID, x.Summary})
+			}
+		}
+		member, err := r.choose(ctx, rows, "", selected.ID+" ▸ enter: docs   ·   esc: back")
+		if err != nil {
+			return err
+		}
+		if member == "" {
+			query = ""
+			continue
+		}
+		if x, ok := recordByID(r.records, member); ok {
+			return r.display(ctx, x, false)
+		}
+		return nil
+	}
+}
+
+// candidates are the records lookups and the picker consider: installed commands,
+// shell definitions, groups and topics (plus system commands with -a/--all).
+func (r *runtime) candidates() []Record {
+	out := make([]Record, 0, len(r.records))
+	for _, x := range r.records {
+		if visibleByDefault(x) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// choose runs fzf over rows and returns the selected id, or "" when cancelled.
+func (r *runtime) choose(ctx context.Context, rows []listRow, query, header string) (string, error) {
 	fzf, e := exec.LookPath("fzf")
 	if e != nil {
-		return errors.New("fzf is required for interactive selection; use `wtf list` or install fzf")
+		return "", errors.New("fzf is required for interactive selection; use `wtf list` or install fzf")
 	}
 	exe, e := os.Executable()
 	if e != nil {
-		return e
+		return "", e
 	}
-	preview := shellQuote(exe) + " --local-only -- {1}"
-	args := []string{"--delimiter=\t", "--with-nth=2", "--layout=reverse", "--wrap", "--prompt=wtf ▸ ", "--header=enter: docs   ·   esc: quit", "--preview", preview, "--preview-window=right,55%,wrap,border-left"}
+	preview := shellQuote(exe) + " --preview -- {1}"
+	if r.all {
+		preview = shellQuote(exe) + " --preview --all -- {1}"
+	}
+	args := []string{"--delimiter=\t", "--with-nth=2", "--layout=reverse", "--tiebreak=index", "--prompt=wtf ▸ ", "--header=" + header, "--preview", preview, "--preview-window=right,55%,wrap,border-left"}
 	if query != "" {
 		args = append(args, "--query", query)
 	}
 	cmd := exec.CommandContext(ctx, fzf, args...)
 	var in strings.Builder
-	for _, x := range records {
-		if !safeCommandID(x.ID) {
+	for _, x := range rows {
+		if !safeCommandID(x.name) {
 			continue
 		}
-		fmt.Fprintf(&in, "%s\t%-10s %-20s %s\n", x.ID, sanitizeDisplay(x.Kind), sanitizeDisplay(x.ID), sanitizeDisplay(x.Summary))
+		fmt.Fprintf(&in, "%s\t%-8s %-24s %s\n", x.name, sanitizeDisplay(x.kind), sanitizeDisplay(x.name), sanitizeDisplay(sanitizeTSV(x.summary)))
 	}
 	cmd.Stdin = strings.NewReader(in.String())
 	cmd.Stderr = r.stderr
 	var out bytesBuffer
 	cmd.Stdout = &out
-	e = cmd.Run()
-	if e != nil {
+	if e = cmd.Run(); e != nil {
 		if ee := new(exec.ExitError); errors.As(e, &ee) && (ee.ExitCode() == 1 || ee.ExitCode() == 130) {
-			return nil
+			return "", nil
 		}
-		return fmt.Errorf("fzf: %w", e)
+		return "", fmt.Errorf("fzf: %w", e)
 	}
-	line := strings.TrimSpace(out.String())
-	id, _, _ := strings.Cut(line, "\t")
-	if id == "" {
-		return nil
-	}
-	if selected, ok := recordByID(records, id); ok {
-		return r.display(ctx, selected, false)
-	}
-	return nil
+	id, _, _ := strings.Cut(strings.TrimSpace(out.String()), "\t")
+	return id, nil
 }
 
 type bytesBuffer struct{ b strings.Builder }
@@ -678,6 +742,7 @@ const usage = `wtf — discover installed commands and read composed documentati
 Usage:
   wtf                         Open the interactive picker
   wtf <query>                 Resolve a document or prefilter the picker
+  wtf -a|--all [<query>]      Also include every other command on PATH
   wtf list [-a|--all] [--json]
   wtf topic new <title>
   wtf topic edit [query]
@@ -749,11 +814,11 @@ _wtf() {
       _values 'command' \
         'list[list commands]' 'topic[author topics]' 'cache[inspect package cache]' \
         'init[emit shell integration]' 'completion[emit completions]' 'version[print version]' \
-        ${(f)"$(command wtf list -a 2>/dev/null | cut -f2)"}
+        ${(f)"$(command wtf list 2>/dev/null | cut -f2)"}
       ;;
     arguments)
       case $words[2] in
-        list) _arguments '(-a --all)'{-a,--all}'[include unavailable annotations]' '--json[emit JSON]' ;;
+        list) _arguments '(-a --all)'{-a,--all}'[include system commands on PATH]' '--json[emit JSON]' ;;
         topic)
           if (( CURRENT == 3 )); then _values 'topic command' 'new[create topic]' 'edit[edit topic]'
           elif [[ $words[3] == edit ]]; then _values 'topic' ${(f)"$(command wtf list -a 2>/dev/null | awk -F '\t' '$1 == "topic" {print $2}')"}
@@ -763,7 +828,7 @@ _wtf() {
           elif [[ $words[3] == status ]]; then _arguments '--json[emit JSON]'; fi ;;
         init) _values 'shell' zsh ;;
         completion) _values 'shell' zsh bash fish ;;
-        *) _values 'command' ${(f)"$(command wtf list -a 2>/dev/null | cut -f2)"} ;;
+        *) _values 'command' ${(f)"$(command wtf list 2>/dev/null | cut -f2)"} ;;
       esac
       ;;
   esac
@@ -775,7 +840,7 @@ const bashCompletion = `_wtf_complete() {
   cur=${COMP_WORDS[COMP_CWORD]}
   prev=${COMP_WORDS[COMP_CWORD-1]}
   if (( COMP_CWORD == 1 )); then
-    COMPREPLY=( $(compgen -W "list topic cache init completion version $(command wtf list -a 2>/dev/null | cut -f2)" -- "$cur") )
+    COMPREPLY=( $(compgen -W "list topic cache init completion version $(command wtf list 2>/dev/null | cut -f2)" -- "$cur") )
   elif [[ ${COMP_WORDS[1]} == list ]]; then
     COMPREPLY=( $(compgen -W '-a --all --json' -- "$cur") )
   elif [[ ${COMP_WORDS[1]} == topic && $COMP_CWORD == 2 ]]; then
@@ -804,7 +869,7 @@ complete -c wtf -n '__fish_use_subcommand' -a cache -d 'Inspect package cache'
 complete -c wtf -n '__fish_use_subcommand' -a init -d 'Emit shell integration'
 complete -c wtf -n '__fish_use_subcommand' -a completion -d 'Emit completions'
 complete -c wtf -n '__fish_use_subcommand' -a version -d 'Print version'
-complete -c wtf -n '__fish_seen_subcommand_from list' -s a -l all -d 'Include unavailable annotations'
+complete -c wtf -n '__fish_seen_subcommand_from list' -s a -l all -d 'Include system commands on PATH'
 complete -c wtf -n '__fish_seen_subcommand_from list' -l json -d 'Emit JSON'
 complete -c wtf -n '__fish_seen_subcommand_from topic; and not __fish_seen_subcommand_from new edit' -a 'new edit'
 complete -c wtf -n '__fish_seen_subcommand_from topic; and __fish_seen_subcommand_from edit' -a '(__wtf_topic_ids)'
