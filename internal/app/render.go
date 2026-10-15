@@ -47,6 +47,29 @@ func render(ctx context.Context, out, errOut io.Writer, markdown, pager string) 
 	_, e := io.WriteString(out, plain)
 	return e
 }
+
+// renderPreview formats docs for the picker's preview pane: mdcat with ANSI styling
+// at the pane width and no pager, or plain text when mdcat is unavailable or fails.
+func renderPreview(ctx context.Context, out io.Writer, markdown string) error {
+	if mdcat, e := exec.LookPath("mdcat"); e == nil {
+		args := []string{"--ansi", "--local"}
+		if cols := os.Getenv("FZF_PREVIEW_COLUMNS"); cols != "" {
+			args = append(args, "--columns", cols)
+		}
+		var b strings.Builder
+		cmd := exec.CommandContext(ctx, mdcat, append(args, "-")...)
+		cmd.Stdin = strings.NewReader(markdown)
+		cmd.Stdout = &b
+		cmd.Env = os.Environ()
+		if cmd.Run() == nil {
+			_, e := io.WriteString(out, b.String())
+			return e
+		}
+	}
+	_, e := io.WriteString(out, plainMarkdown(markdown))
+	return e
+}
+
 func plainMarkdown(s string) string {
 	var b strings.Builder
 	scan := bufio.NewScanner(strings.NewReader(s))

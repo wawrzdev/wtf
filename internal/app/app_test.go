@@ -481,3 +481,15 @@ func TestShellHintOnlyForShellDefinitionsOutsidePreview(t *testing.T) {
 		t.Fatalf("preview shows shell hint: %s", o.String())
 	}
 }
+
+func TestPreviewFallsBackToPlainTextWithoutMdcat(t *testing.T) {
+	h := setup(t)
+	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "rg.md"), "---\nschema: 1\nid: rg\nkind: command\nsummary: Fast search\n---\n\n# rg body\n", 0600)
+	var o, e bytes.Buffer
+	if err := Run(context.Background(), []string{"--preview", "--", "rg"}, nil, &o, &e, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(o.String(), "rg body") || strings.Contains(o.String(), "# rg body") {
+		t.Fatalf("preview not plain: %q", o.String())
+	}
+}

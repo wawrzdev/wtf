@@ -26,6 +26,7 @@ type runtime struct {
 	stdin               io.Reader
 	stdout, stderr      io.Writer
 	version             string
+	preview             bool
 }
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, version string) error {
@@ -171,6 +172,10 @@ func (r *runtime) lookup(ctx context.Context, args []string) error {
 			i = len(args)
 		case "--local-only":
 			localOnly = true
+		case "--preview":
+			// Private picker protocol: local-only docs rendered for the fzf preview pane.
+			localOnly = true
+			r.preview = true
 		case "--shell-kind":
 			if i+3 >= len(args) {
 				return errors.New("invalid private shell protocol")
@@ -376,6 +381,9 @@ func matchRecords(rs []Record, q string) []Record {
 }
 func (r *runtime) display(ctx context.Context, x Record, local bool) error {
 	doc := compose(ctx, x, docOptions{LocalOnly: local, CheatEnabled: r.cfg.Cheat.Enabled, CacheDir: r.cacheDir})
+	if r.preview {
+		return renderPreview(ctx, r.stdout, doc)
+	}
 	return render(ctx, r.stdout, r.stderr, doc, r.cfg.Pager)
 }
 
@@ -429,7 +437,7 @@ func (r *runtime) choose(ctx context.Context, rows []listRow, query, header stri
 	if e != nil {
 		return "", e
 	}
-	preview := shellQuote(exe) + " --local-only -- {1}"
+	preview := shellQuote(exe) + " --preview -- {1}"
 	args := []string{"--delimiter=\t", "--with-nth=2", "--layout=reverse", "--tiebreak=index", "--wrap", "--prompt=wtf ▸ ", "--header=" + header, "--preview", preview, "--preview-window=right,55%,wrap,border-left"}
 	if query != "" {
 		args = append(args, "--query", query)
