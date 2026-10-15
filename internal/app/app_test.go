@@ -493,3 +493,22 @@ func TestPreviewFallsBackToPlainTextWithoutMdcat(t *testing.T) {
 		t.Fatalf("preview not plain: %q", o.String())
 	}
 }
+
+func TestLocalViewUsesTealdeerCacheDirAndCachedCheat(t *testing.T) {
+	h := setup(t)
+	pages := filepath.Join(h, "tealdeer", "tldr-pages", "pages", "common")
+	mustFile(t, filepath.Join(pages, "rg.md"), "# rg\n\n> Search recursively.\n", 0600)
+	t.Setenv("TEALDEER_CACHE_DIR", filepath.Join(h, "tealdeer"))
+	mustFile(t, filepath.Join(h, "bin", "rg"), "#!/bin/sh\n", 0700)
+	mustFile(t, cheatCachePath("rg", filepath.Join(h, "cache", "wtf")), "rg cheat page\n", 0600)
+	mustFile(t, filepath.Join(h, "config", "wtf", "config.toml"), "[annotations]\npaths = []\n[providers.cheat]\nenabled = true\n", 0600)
+	var o, e bytes.Buffer
+	if err := Run(context.Background(), []string{"--local-only", "rg"}, nil, &o, &e, "x"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"## tldr (local)", "Search recursively", "## cheat.sh (cached)", "rg cheat page"} {
+		if !strings.Contains(o.String(), want) {
+			t.Fatalf("missing %q in %s", want, o.String())
+		}
+	}
+}

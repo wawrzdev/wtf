@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -109,6 +110,12 @@ func compose(ctx context.Context, r Record, opt docOptions) string {
 	}
 	eligible := tldr != "" || hasPublicPackage(r.Packages)
 	commandRecord := r.Kind != "topic" && r.Kind != "group" && r.Kind != "alias" && r.Kind != "func" && r.Kind != "function"
+	if opt.LocalOnly && opt.CheatEnabled && commandRecord {
+		// Local-only views (the picker preview) show cheat.sh only from the cache.
+		if text := cachedCheat(name, opt.CacheDir); text != "" {
+			fmt.Fprintf(&b, "\n## cheat.sh (cached)\n\n%s\n", text)
+		}
+	}
 	if !opt.LocalOnly && opt.CheatEnabled && commandRecord && eligible && (r.Shell == nil || (r.Shell.Kind != "alias" && r.Shell.Kind != "function")) {
 		text, stale, note := cheat(ctx, name, opt.CacheDir)
 		if text != "" {
@@ -242,11 +249,18 @@ var errTLDRFound = errors.New("tldr page found")
 
 func localTLDRRoots(home string) []string {
 	roots := []string{filepath.Join(home, ".cache", "tealdeer"), filepath.Join(home, ".local", "share", "tldr")}
+	if goruntime.GOOS == "darwin" {
+		// tealdeer follows the macOS cache convention unless configured otherwise.
+		roots = append([]string{filepath.Join(home, "Library", "Caches", "tealdeer")}, roots...)
+	}
 	if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" {
 		roots = append([]string{filepath.Join(xdg, "tealdeer")}, roots...)
 	}
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
 		roots = append(roots, filepath.Join(xdg, "tldr"))
+	}
+	if dir := os.Getenv("TEALDEER_CACHE_DIR"); dir != "" {
+		roots = append([]string{dir}, roots...)
 	}
 	return roots
 }
@@ -293,9 +307,19 @@ func hasPublicPackage(packages []inventory.Package) bool {
 var cheatBaseURL = "https://cheat.sh/"
 var cheatHTTPClient = &http.Client{Timeout: 4 * time.Second}
 
-func cheat(ctx context.Context, name, cacheDir string) (string, bool, string) {
+func cheatCachePath(name, cacheDir string) string {
 	key := sha256.Sum256([]byte(name))
-	path := filepath.Join(cacheDir, "cheat", hex.EncodeToString(key[:])+".txt")
+	return filepath.Join(cacheDir, "cheat", hex.EncodeToString(key[:])+".txt")
+}
+
+// cachedCheat returns a previously fetched cheat.sh page without any network access.
+func cachedCheat(name, cacheDir string) string {
+	b, _ := os.ReadFile(cheatCachePath(name, cacheDir))
+	return string(b)
+}
+
+func cheat(ctx context.Context, name, cacheDir string) (string, bool, string) {
+	path := cheatCachePath(name, cacheDir)
 	if b, e := os.ReadFile(path); e == nil {
 		if st, e := os.Stat(path); e == nil && time.Since(st.ModTime()) < 7*24*time.Hour {
 			return string(b), false, ""
