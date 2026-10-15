@@ -83,7 +83,9 @@ func compose(ctx context.Context, r Record, opt docOptions) string {
 			fmt.Fprintln(&b, a.Summary)
 			fmt.Fprintln(&b)
 		}
-		if a.Body != "" {
+		if a.Body != "" && a.Preformatted {
+			fmt.Fprintf(&b, "```text\n%s\n```\n", a.Body)
+		} else if a.Body != "" {
 			fmt.Fprintln(&b, a.Body)
 		}
 	}

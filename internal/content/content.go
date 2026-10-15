@@ -16,15 +16,17 @@ type Source struct {
 	Line int    `json:"line"`
 }
 type Entry struct {
-	Schema  int      `json:"schema"`
-	ID      string   `json:"id"`
-	Kind    string   `json:"kind"`
-	Title   string   `json:"title,omitempty"`
-	Summary string   `json:"summary,omitempty"`
-	Parent  string   `json:"parent,omitempty"`
-	Body    string   `json:"body,omitempty"`
-	Sources []Source `json:"sources"`
-	fields  map[string]bool
+	Schema  int    `json:"schema"`
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Title   string `json:"title,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	Parent  string `json:"parent,omitempty"`
+	Body    string `json:"body,omitempty"`
+	// Preformatted marks an inline `@detail` body: hand-aligned text, not Markdown.
+	Preformatted bool     `json:"preformatted,omitempty"`
+	Sources      []Source `json:"sources"`
+	fields       map[string]bool
 }
 
 func Load(annotationPaths, topicDirs []string) (map[string]Entry, map[string]Entry, []error) {
@@ -242,12 +244,11 @@ func parseInline(path, s string) []Entry {
 				if !strings.HasPrefix(t, "#") {
 					break
 				}
-				t = strings.TrimSpace(strings.TrimPrefix(t, "#"))
-				body = append(body, t)
+				body = append(body, strings.TrimRight(strings.TrimPrefix(t, "#"), " \t"))
 				i = j
 			}
 			if validID(id) {
-				out = append(out, Entry{Schema: 1, ID: id, Body: strings.TrimSpace(strings.Join(body, "\n")), Sources: []Source{{path, i - len(body) + 1}}})
+				out = append(out, Entry{Schema: 1, ID: id, Body: strings.Trim(dedent(body), "\n"), Preformatted: true, Sources: []Source{{path, i - len(body) + 1}}})
 			}
 			continue
 		}
@@ -269,6 +270,29 @@ func parseInline(path, s string) []Entry {
 		}
 	}
 	return out
+}
+
+// dedent removes the indentation shared by all non-blank lines, keeping the
+// alignment of hand-formatted columns and continuation lines.
+func dedent(lines []string) string {
+	common := -1
+	for _, l := range lines {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		n := len(l) - len(strings.TrimLeft(l, " \t"))
+		if common < 0 || n < common {
+			common = n
+		}
+	}
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		if len(l) >= common && common > 0 {
+			l = l[common:]
+		}
+		out[i] = l
+	}
+	return strings.Join(out, "\n")
 }
 
 // stripPackageTags removes trailing "@brew <package>" markers that older inline tags
@@ -307,6 +331,7 @@ func overlay(dst map[string]Entry, next Entry) {
 	}
 	if next.Body != "" {
 		cur.Body = next.Body
+		cur.Preformatted = next.Preformatted
 	}
 	cur.Sources = append(cur.Sources, next.Sources...)
 	dst[next.ID] = cur

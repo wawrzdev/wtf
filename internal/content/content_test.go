@@ -106,3 +106,13 @@ func TestParentFieldAndGroupKind(t *testing.T) {
 		t.Fatalf("self-parent accepted: %v", errs)
 	}
 }
+
+func TestInlineDetailKeepsRelativeIndentation(t *testing.T) {
+	d := t.TempDir()
+	write(t, d+"/x", "# @tool up — keys\n# @detail up\n#   Up / Down    prefix search: type a few chars,\n#                then Up shows matches\n#\n#   PageUp       step\n")
+	got, _, _ := Load([]string{d + "/x"}, nil)
+	want := "Up / Down    prefix search: type a few chars,\n             then Up shows matches\n\nPageUp       step"
+	if got["up"].Body != want {
+		t.Fatalf("%q", got["up"].Body)
+	}
+}

@@ -587,3 +587,16 @@ func TestUninstalledLookupNeedsAll(t *testing.T) {
 		t.Fatalf("-a lookup lacks tldr: %q", o.String())
 	}
 }
+
+func TestInlineDetailIsShownAsPreformattedText(t *testing.T) {
+	h := setup(t)
+	mustFile(t, filepath.Join(h, "bin", "fd"), "#!/bin/sh\n", 0700)
+	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "inline"), "# @tool fd — faster find\n# @detail fd\n#   fd foo        search for foo\n#   fd -e ts      all .ts files\n", 0600)
+	var o, e bytes.Buffer
+	if err := Run(context.Background(), []string{"fd"}, nil, &o, &e, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(o.String(), "```text\nfd foo        search for foo\nfd -e ts      all .ts files\n```") {
+		t.Fatalf("detail not fenced: %q", o.String())
+	}
+}
