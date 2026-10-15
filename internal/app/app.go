@@ -151,7 +151,7 @@ func (r *runtime) list(args []string) error {
 	}
 	for _, x := range visible {
 		status := "unavailable"
-		if x.Available {
+		if x.Available || x.Kind == "topic" || x.Kind == "group" {
 			status = "available"
 		} else if shellDefinition(x) {
 			status = "shell"

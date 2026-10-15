@@ -111,7 +111,9 @@ func shellDefinition(x Record) bool {
 
 // visibleByDefault decides which records list and the picker show without --all.
 func visibleByDefault(x Record) bool {
-	return x.Available || x.Kind == "topic" || x.Kind == "group" || x.HasTLDR || shellDefinition(x)
+	// tldr pages for commands that are not installed stay reachable by name and with
+	// --all, but are not listed by default.
+	return x.Available || x.Kind == "topic" || x.Kind == "group" || shellDefinition(x)
 }
 
 // kindOrder lists shell definitions first, then commands, groups of commands and topics.

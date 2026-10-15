@@ -547,3 +547,23 @@ func TestPagerEnvDefaultsOnlyWithoutUserChoice(t *testing.T) {
 		}
 	}
 }
+
+func TestTLDROnlyCommandsHiddenByDefault(t *testing.T) {
+	h := setup(t)
+	t.Setenv("TEALDEER_CACHE_DIR", filepath.Join(h, "tealdeer"))
+	mustFile(t, filepath.Join(h, "tealdeer", "pages", "common", "notinstalled.md"), "# notinstalled\n\n> Example.\n", 0600)
+	var o, e bytes.Buffer
+	if err := Run(context.Background(), []string{"list"}, nil, &o, &e, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(o.String(), "notinstalled") {
+		t.Fatalf("default list shows uninstalled tldr page: %q", o.String())
+	}
+	o.Reset()
+	if err := Run(context.Background(), []string{"list", "--all"}, nil, &o, &e, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(o.String(), "notinstalled") {
+		t.Fatalf("--all hides tldr page: %q", o.String())
+	}
+}
