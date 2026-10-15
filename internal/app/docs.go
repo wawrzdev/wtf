@@ -113,7 +113,7 @@ func compose(ctx context.Context, r Record, opt docOptions) string {
 	if opt.LocalOnly && opt.CheatEnabled && commandRecord {
 		// Local-only views (the picker preview) show cheat.sh only from the cache.
 		if text := cachedCheat(name, opt.CacheDir); text != "" {
-			fmt.Fprintf(&b, "\n## cheat.sh (cached)\n\n%s\n", text)
+			fmt.Fprintf(&b, "\n## cheat.sh (cached)\n\n```text\n%s\n```\n", strings.TrimSpace(text))
 		}
 	}
 	if !opt.LocalOnly && opt.CheatEnabled && commandRecord && eligible && (r.Shell == nil || (r.Shell.Kind != "alias" && r.Shell.Kind != "function")) {
@@ -123,7 +123,8 @@ func compose(ctx context.Context, r Record, opt docOptions) string {
 			if stale {
 				label += " (stale cache)"
 			}
-			fmt.Fprintf(&b, "\n## %s\n\n%s\n", label, text)
+			// Cheat sheets use "#" for comments; fence them so Markdown renderers keep them literal.
+			fmt.Fprintf(&b, "\n## %s\n\n```text\n%s\n```\n", label, strings.TrimSpace(text))
 		} else if note != "" {
 			fmt.Fprintf(&b, "\n## cheat.sh\n\n%s\n", note)
 		}
@@ -315,20 +316,35 @@ func cheatCachePath(name, cacheDir string) string {
 // cachedCheat returns a previously fetched cheat.sh page without any network access.
 func cachedCheat(name, cacheDir string) string {
 	b, _ := os.ReadFile(cheatCachePath(name, cacheDir))
+	if looksLikeHTML(b) {
+		return ""
+	}
 	return string(b)
+}
+
+// looksLikeHTML reports a web page; cheat.sh serves one to clients it does not
+// recognize as a terminal, and such pages are never shown or cached.
+func looksLikeHTML(b []byte) bool {
+	head := bytes.ToLower(bytes.TrimSpace(b))
+	return bytes.HasPrefix(head, []byte("<html")) || bytes.HasPrefix(head, []byte("<!doctype"))
 }
 
 func cheat(ctx context.Context, name, cacheDir string) (string, bool, string) {
 	path := cheatCachePath(name, cacheDir)
-	if b, e := os.ReadFile(path); e == nil {
+	if b, e := os.ReadFile(path); e == nil && !looksLikeHTML(b) {
 		if st, e := os.Stat(path); e == nil && time.Since(st.ModTime()) < 7*24*time.Hour {
 			return string(b), false, ""
 		}
 	}
 	old, _ := os.ReadFile(path)
+	if looksLikeHTML(old) {
+		old = nil
+	}
 	u := cheatBaseURL + url.PathEscape(name) + "?T"
 	req, e := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if e == nil {
+		// cheat.sh returns plain text only to user agents it recognizes as terminals.
+		req.Header.Set("User-Agent", "curl/8 (wtf)")
 		var resp *http.Response
 		resp, e = cheatHTTPClient.Do(req)
 		if e == nil {
@@ -336,7 +352,9 @@ func cheat(ctx context.Context, name, cacheDir string) (string, bool, string) {
 			if resp.StatusCode == 200 {
 				var b []byte
 				b, e = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-				if e == nil && len(bytes.TrimSpace(b)) > 0 {
+				if e == nil && looksLikeHTML(b) {
+					e = errors.New("cheat.sh returned a web page")
+				} else if e == nil && len(bytes.TrimSpace(b)) > 0 {
 					_ = os.MkdirAll(filepath.Dir(path), 0700)
 					_ = os.WriteFile(path, b, 0600)
 					return string(b), false, ""

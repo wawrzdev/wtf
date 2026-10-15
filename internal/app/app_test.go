@@ -512,3 +512,26 @@ func TestLocalViewUsesTealdeerCacheDirAndCachedCheat(t *testing.T) {
 		}
 	}
 }
+
+func TestCheatRequestsTextAndRejectsWebPages(t *testing.T) {
+	old, oldClient := cheatBaseURL, cheatHTTPClient
+	defer func() { cheatBaseURL = old; cheatHTTPClient = oldClient }()
+	cheatBaseURL = "https://local.invalid/"
+	var agent string
+	cheatHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		agent = r.Header.Get("User-Agent")
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("<html><head>page</head></html>")), Header: make(http.Header)}, nil
+	})}
+	cache := t.TempDir()
+	mustFile(t, cheatCachePath("eza", cache), "<HTML>stale web page</HTML>", 0600)
+	text, _, note := cheat(context.Background(), "eza", cache)
+	if !strings.HasPrefix(agent, "curl/") || text != "" || !strings.Contains(note, "web page") {
+		t.Fatalf("agent %q text %q note %q", agent, text, note)
+	}
+	if cachedCheat("eza", cache) != "" {
+		t.Fatal("cached web page shown")
+	}
+	if b, _ := os.ReadFile(cheatCachePath("eza", cache)); !strings.Contains(string(b), "stale web page") {
+		t.Fatal("rejected response overwrote cache")
+	}
+}
