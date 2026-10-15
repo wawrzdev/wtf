@@ -71,7 +71,9 @@ func compose(ctx context.Context, r Record, opt docOptions) string {
 			fmt.Fprint(&b, " (complex expansion; target providers omitted)")
 		}
 		fmt.Fprintln(&b)
-	} else if r.Kind != "topic" && r.Kind != "group" {
+	} else if (r.Kind == "alias" || r.Kind == "func") && !opt.LocalOnly {
+		// Only shell definitions depend on the wrapper; the picker preview runs the
+		// binary directly, so it never has shell details to show.
 		fmt.Fprintln(&b, "- Live shell resolution: unavailable (run `eval \"$(wtf init zsh)\"`)")
 	}
 	if a := r.Annotation; a != nil {

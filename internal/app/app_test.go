@@ -36,10 +36,13 @@ func TestStableListAndQuery(t *testing.T) {
 	if e := Run(context.Background(), []string{"rg"}, strings.NewReader(""), &out, &err, "test"); e != nil {
 		t.Fatal(e)
 	}
-	for _, want := range []string{"# rg", "Fast search", "# rg body", "Live shell resolution: unavailable"} {
+	for _, want := range []string{"# rg", "Fast search", "# rg body"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in %s", want, out.String())
 		}
+	}
+	if strings.Contains(out.String(), "Live shell resolution") {
+		t.Errorf("plain command shows shell hint: %s", out.String())
 	}
 }
 func TestListSortsByKindThenName(t *testing.T) {
@@ -457,5 +460,24 @@ func mustFile(t *testing.T, p, s string, mode os.FileMode) {
 	}
 	if e := os.WriteFile(p, []byte(s), mode); e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestShellHintOnlyForShellDefinitionsOutsidePreview(t *testing.T) {
+	h := setup(t)
+	mustFile(t, filepath.Join(h, "data", "wtf", "annotations", "inline"), "# @alias ll — long list\n", 0600)
+	var o, e bytes.Buffer
+	if err := Run(context.Background(), []string{"ll"}, nil, &o, &e, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(o.String(), "Live shell resolution: unavailable") {
+		t.Fatalf("alias without wrapper lacks hint: %s", o.String())
+	}
+	o.Reset()
+	if err := Run(context.Background(), []string{"--local-only", "ll"}, nil, &o, &e, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(o.String(), "Live shell resolution") {
+		t.Fatalf("preview shows shell hint: %s", o.String())
 	}
 }
